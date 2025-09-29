@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # cfy - Cloudflare IP V2Ray/VLESS Node Generator
-# Modified Version based on analysis
-# Changes as per user requirements
-# Fixed: Template validation, 云优选 parsing with corrected awk columns, random IP calculation
+# Modified Version based on https://github.com/byJoey/cfy
+# Modifications: Added self-optimized source, auto-generate all 3 modes, custom naming, save to jd.txt
 
-set -e
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -15,15 +14,16 @@ NC='\033[0m' # No Color
 
 # Check dependencies
 check_dependencies() {
-    local missing=""
-    for cmd in jq curl base64 shuf grep sed awk realpath; do
+    local missing=()
+    local cmds=(jq curl base64 shuf grep sed awk)
+    for cmd in "${cmds[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
-            missing="$missing $cmd"
+            missing+=("$cmd")
         fi
     done
-    if [ -n "$missing" ]; then
-        echo -e "${YELLOW}Missing dependencies: $missing${NC}"
-        echo "Please install them using: apt update && apt install -y jq curl coreutils grep sed gawk realpath"
+    if [ ${#missing[@]} -ne 0 ]; then
+        echo -e "${YELLOW}Missing dependencies: ${missing[*]}${NC}"
+        echo "Please install them using: apt update && apt install -y jq curl coreutils grep sed gawk"
         exit 1
     fi
 }
@@ -38,43 +38,40 @@ random_ip_from_cidr() {
     local netmask=$(((0xFFFFFFFF << shift) & 0xFFFFFFFF))
     local network=$((ipint & netmask))
     local host_bits=$(((1 << shift) - 1))
-    local broadcast=$((network | host_bits))
     local num_hosts=$((host_bits - 1))
     if (( num_hosts <= 0 )); then
-        echo "Invalid CIDR: $cidr" >&2
         return 1
     fi
     local offset=$((1 + (RANDOM % num_hosts)))
     local newint=$((network + offset))
-    printf "%d.%d.%d.%d\n" $((newint >> 24)) $(((newint >> 16) & 255)) $(((newint >> 8) & 255)) $((newint & 255))
+    printf "%d.%d.%d.%d" $((newint >> 24)) $(((newint >> 16) & 255)) $(((newint >> 8) & 255)) $((newint & 255))
 }
 
-# Get template with validation
+# Get template - pick first valid vmess://
 get_template() {
-    local valid_template=""
-    template_file="/etc/sing-box/url.txt"
+    local template_file="/etc/sing-box/url.txt"
     if [ -s "$template_file" ]; then
-        valid_template=$(grep -m1 'vmess://' "$template_file" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
+        template=$(grep -m1 '^vmess://' "$template_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     fi
-    while [ -z "$valid_template" ]; do
-        echo -e "${YELLOW}No valid VMess template found. Please provide a VMess template link.${NC}"
-        read -p "Paste the template link (vmess://...): " valid_template
-    done
-    # Validate
-    local base64_part="${valid_template#vmess://}"
-    local decoded=$(echo "$base64_part" | base64 -d 2>/dev/null)
-    if [ $? -ne 0 ] || [ -z "$decoded" ]; then
-        echo -e "${RED}Invalid template: base64 decode failed.${NC}"
-        valid_template=""
-        continue
+    if [ -z "$template" ] || [[ ! "$template" =~ ^vmess:// ]]; then
+        echo -e "${YELLOW}No valid VMess template found at $template_file. Please provide one.${NC}"
+        read -p "Paste the template link (vmess://...): " template
+        template=$(echo "$template" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -z "$template" ] || [[ ! "$template" =~ ^vmess:// ]]; then
+            echo -e "${RED}Invalid template provided. Exiting.${NC}"
+            exit 1
+        fi
     fi
-    local test_json=$(echo "$decoded" | jq . 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Invalid template: not valid JSON.${NC}"
-        valid_template=""
-        continue
+    # Quick validation
+    local base64_part="${template#vmess://}"
+    if ! echo "$base64_part" | base64 -d >/dev/null 2>&1; then
+        echo -e "${RED}Invalid base64 in template. Exiting.${NC}"
+        exit 1
     fi
-    template="$valid_template"
+    if ! echo "$base64_part" | base64 -d | jq . >/dev/null 2>&1; then
+        echo -e "${RED}Invalid JSON in template. Exiting.${NC}"
+        exit 1
+    fi
 }
 
 # Generate node from template
@@ -82,16 +79,8 @@ generate_node() {
     local add="$1"
     local ps="$2"
     local base64_part="${template#vmess://}"
-    local decoded=$(echo "$base64_part" | base64 -d 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Invalid base64 in template.${NC}" >&2
-        return 1
-    fi
-    local new_json=$(echo "$decoded" | jq --arg add "$add" --arg ps "$ps" '.add = $add | .ps = $ps' 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Invalid JSON in template.${NC}" >&2
-        return 1
-    fi
+    local decoded=$(echo "$base64_part" | base64 -d)
+    local new_json=$(echo "$decoded" | jq --arg add "$add" --arg ps "$ps" '.add = $add | .ps = $ps')
     local new_base64=$(echo "$new_json" | base64 -w 0)
     echo "vmess://$new_base64"
 }
@@ -101,14 +90,16 @@ generate_all_nodes() {
     local output=""
     local jd_file="$(pwd)/jd.txt"
 
-    # 1) Cloudflare 官方 (手动优选) - 10 IPs
+    # 1) Cloudflare 官方 (手动优选) - Generate 10 random IPs
     echo -e "${GREEN}Generating from Cloudflare Official IPs...${NC}"
     local cidrs=$(curl -s https://www.cloudflare.com/ips-v4)
-    if [ -z "$cidrs" ]; then
-        echo -e "${YELLOW}Failed to fetch official CIDRs.${NC}"
-    else
-        local num_generated=0
-        while [ $num_generated -lt 10 ]; do
+    local num_generated=0
+    if [ -n "$cidrs" ]; then
+        cidrs=$(echo "$cidrs" | tr ' ' '\n')
+        for i in $(seq 1 20); do  # Max 20 attempts
+            if [ $num_generated -ge 10 ]; then
+                break
+            fi
             local cidr=$(echo "$cidrs" | shuf -n 1)
             local ip=$(random_ip_from_cidr "$cidr")
             if [ -n "$ip" ]; then
@@ -120,24 +111,18 @@ generate_all_nodes() {
                 fi
             fi
         done
-        if [ $num_generated -eq 0 ]; then
-            echo -e "${YELLOW}No official IPs generated.${NC}"
-        else
-            echo -e "${GREEN}Generated $num_generated official nodes.${NC}"
-        fi
+        echo -e "${GREEN}Generated $num_generated official nodes.${NC}"
+    else
+        echo -e "${YELLOW}Failed to fetch official CIDRs.${NC}"
     fi
 
-    # 2) 云优选 - parse table with awk, corrected columns
+    # 2) 云优选 - Parse HTML table
     echo -e "${GREEN}Generating from 云优选 IPs...${NC}"
     local html=$(curl -s https://api.uouin.com/cloudflare.html)
-    if [ -z "$html" ]; then
-        echo -e "${YELLOW}Failed to fetch optimized IPs.${NC}"
-    else
-        local opt_lines=$(echo "$html" | awk 'BEGIN {FS="|"} NR>1 { gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 ~ /^(电信|联通|移动|多线|IPV6)$/) print $3 " " $4 }')
-        if [ -z "$opt_lines" ]; then
-            echo -e "${YELLOW}Unable to parse optimized IPs.${NC}"
-        else
-            local count=0
+    local count=0
+    if [ -n "$html" ]; then
+        local opt_lines=$(echo "$html" | sed -E -n 's/.*<td>(电信|联通|移动|多线)<\/td>.*<td>(([0-9]{1,3}\.){3}[0-9]{1,3})<\/td>.*$/\1 \2/p')
+        if [ -n "$opt_lines" ]; then
             while IFS= read -r line; do
                 local operator=$(echo "$line" | awk '{print $1}')
                 local ip=$(echo "$line" | awk '{print $2}')
@@ -151,42 +136,57 @@ generate_all_nodes() {
                 fi
             done <<< "$opt_lines"
             echo -e "${GREEN}Generated $count optimized nodes.${NC}"
+        else
+            echo -e "${YELLOW}Unable to parse optimized IPs.${NC}"
         fi
+    else
+        echo -e "${YELLOW}Failed to fetch optimized IPs.${NC}"
     fi
 
-    # 3) 自优选
+    # 3) 自优选 - From custom txt
     echo -e "${GREEN}Generating from 自优选 source...${NC}"
     local self_content=$(curl -s http://nas.848588.xyz:18080/output/abc/dy/cf.txt)
-    if [ -z "$self_content" ]; then
-        echo -e "${YELLOW}Failed to fetch self-optimized source.${NC}"
-    else
-        local self_adds=$(echo "$self_content" | grep -v '^$' | grep -E '^[0-9a-zA-Z.-]+(\.[0-9a-zA-Z.-]+)*(:[0-9]+)?$' | head -50) # Filter valid IP/domain, limit 50
-        if [ -z "$self_adds" ]; then
-            echo -e "${YELLOW}No valid adds in self-optimized source.${NC}"
-        else
-            local count=0
+    local self_count=0
+    if [ -n "$self_content" ]; then
+        local self_adds=$(echo "$self_content" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -50)
+        if [ -n "$self_adds" ]; then
             while IFS= read -r add; do
-                local ps="vpsus-自选[$add]"
-                local node=$(generate_node "$add" "$ps")
-                if [ -n "$node" ]; then
-                    output+="$node"$'\n'
-                    ((count++))
+                if [[ "$add" =~ ^[0-9a-zA-Z.-]+$ ]] || [[ "$add" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$add" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                    local ps="vpsus-自选[$add]"
+                    local node=$(generate_node "$add" "$ps")
+                    if [ -n "$node" ]; then
+                        output+="$node"$'\n'
+                        ((self_count++))
+                    fi
                 fi
             done <<< "$self_adds"
-            echo -e "${GREEN}Generated $count self-optimized nodes.${NC}"
+            echo -e "${GREEN}Generated $self_count self-optimized nodes.${NC}"
+        else
+            echo -e "${YELLOW}No valid adds in self-optimized source.${NC}"
         fi
+    else
+        echo -e "${YELLOW}Failed to fetch self-optimized source.${NC}"
     fi
 
     # Output and save
     if [ -n "$output" ]; then
         echo -e "${GREEN}Generated nodes:${NC}"
         echo -e "$output"
-        printf '%s\n' "$output" > "$jd_file" # Overwrite jd.txt properly
-        echo -e "${GREEN}Results saved to $(realpath "$jd_file")${NC}"
+        echo "$output" > "$jd_file"
+        if command -v realpath >/dev/null 2>&1; then
+            echo -e "${GREEN}Results saved to $(realpath "$jd_file")${NC}"
+        else
+            echo -e "${GREEN}Results saved to $jd_file${NC}"
+        fi
     else
         echo -e "${RED}No nodes generated.${NC}"
     fi
 }
+
+# Header (optional, from original)
+echo "=================================================="
+echo " 节点优选生成器 (cfy) - Modified"
+echo "=================================================="
 
 # Run
 check_dependencies
