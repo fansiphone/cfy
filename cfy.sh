@@ -3,7 +3,7 @@
 # cfy - Cloudflare IP V2Ray/VLESS Node Generator
 # Modified Version based on analysis
 # Changes as per user requirements
-# Fixed: Template parsing, 云优选 parsing with awk to avoid grep issues, added checks
+# Fixed: Template validation, 云优选 parsing with corrected awk columns, random IP calculation
 
 set -e
 
@@ -28,51 +28,53 @@ check_dependencies() {
     fi
 }
 
-# Function to trim whitespace (bash compatible)
-trim() {
-    local var="$*"
-    var="${var#"${var%%[![:space:]]*}"}"
-    var="${var%"${var##*[![:space:]]}"}"
-    echo -n "$var"
-}
-
 # Function to generate random IP from CIDR
 random_ip_from_cidr() {
     local cidr="$1"
     IFS='/' read -r ip mask <<< "$cidr"
     IFS='.' read -r a b c d <<< "$ip"
     local ipint=$((a * 16777216 + b * 65536 + c * 256 + d))
-    local netmask=$((0xFFFFFFFF << (32 - mask) & 0xFFFFFFFF))
+    local shift=$((32 - mask))
+    local netmask=$(((0xFFFFFFFF << shift) & 0xFFFFFFFF))
     local network=$((ipint & netmask))
-    local broadcast=$((network | ~netmask))
-    local num_hosts=$((broadcast - network - 1))
+    local host_bits=$(((1 << shift) - 1))
+    local broadcast=$((network | host_bits))
+    local num_hosts=$((host_bits - 1))
     if (( num_hosts <= 0 )); then
         echo "Invalid CIDR: $cidr" >&2
         return 1
     fi
-    local offset=$(( (RANDOM % num_hosts) + 1 ))
+    local offset=$((1 + (RANDOM % num_hosts)))
     local newint=$((network + offset))
     printf "%d.%d.%d.%d\n" $((newint >> 24)) $(((newint >> 16) & 255)) $(((newint >> 8) & 255)) $((newint & 255))
 }
 
-# Get template - extract first vmess:// line
+# Get template with validation
 get_template() {
+    local valid_template=""
     template_file="/etc/sing-box/url.txt"
     if [ -s "$template_file" ]; then
-        template=$(grep -m1 '^vmess://' "$template_file" 2>/dev/null)
+        valid_template=$(grep -m1 'vmess://' "$template_file" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
     fi
-    if [ -z "$template" ]; then
+    while [ -z "$valid_template" ]; do
         echo -e "${YELLOW}No valid VMess template found. Please provide a VMess template link.${NC}"
-        read -p "Paste the template link (vmess://...): " template
-        if [ -z "$template" ]; then
-            echo -e "${RED}No template provided. Exiting.${NC}"
-            exit 1
-        fi
+        read -p "Paste the template link (vmess://...): " valid_template
+    done
+    # Validate
+    local base64_part="${valid_template#vmess://}"
+    local decoded=$(echo "$base64_part" | base64 -d 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$decoded" ]; then
+        echo -e "${RED}Invalid template: base64 decode failed.${NC}"
+        valid_template=""
+        continue
     fi
-    if [[ ! "$template" =~ ^vmess:// ]]; then
-        echo -e "${RED}Invalid template: does not start with vmess:// Exiting.${NC}"
-        exit 1
+    local test_json=$(echo "$decoded" | jq . 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Invalid template: not valid JSON.${NC}"
+        valid_template=""
+        continue
     fi
+    template="$valid_template"
 }
 
 # Generate node from template
@@ -125,19 +127,13 @@ generate_all_nodes() {
         fi
     fi
 
-    # 2) 云优选 - parse table with awk
+    # 2) 云优选 - parse table with awk, corrected columns
     echo -e "${GREEN}Generating from 云优选 IPs...${NC}"
     local html=$(curl -s https://api.uouin.com/cloudflare.html)
     if [ -z "$html" ]; then
         echo -e "${YELLOW}Failed to fetch optimized IPs.${NC}"
     else
-        local opt_lines=$(echo "$html" | awk -F'|' '
-            {
-                for(i=1; i<=NF; i++) gsub(/^[ \t]+|[ \t]+$/, "", $i)
-                if (NF >= 4 && ($3 ~ /^(电信|联通|移动|多线)$/) && $4 ~ /^[0-9]{1,3}(\\.[0-9]{1,3}){3}$/) {
-                    print $3 " " $4
-                }
-            }')
+        local opt_lines=$(echo "$html" | awk 'BEGIN {FS="|"} NR>1 { gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 ~ /^(电信|联通|移动|多线|IPV6)$/) print $3 " " $4 }')
         if [ -z "$opt_lines" ]; then
             echo -e "${YELLOW}Unable to parse optimized IPs.${NC}"
         else
@@ -145,11 +141,13 @@ generate_all_nodes() {
             while IFS= read -r line; do
                 local operator=$(echo "$line" | awk '{print $1}')
                 local ip=$(echo "$line" | awk '{print $2}')
-                local ps="vpsus-${operator}[$ip]"
-                local node=$(generate_node "$ip" "$ps")
-                if [ -n "$node" ]; then
-                    output+="$node"$'\n'
-                    ((count++))
+                if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    local ps="vpsus-${operator}[$ip]"
+                    local node=$(generate_node "$ip" "$ps")
+                    if [ -n "$node" ]; then
+                        output+="$node"$'\n'
+                        ((count++))
+                    fi
                 fi
             done <<< "$opt_lines"
             echo -e "${GREEN}Generated $count optimized nodes.${NC}"
