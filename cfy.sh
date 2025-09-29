@@ -15,7 +15,7 @@ check_template() {
     fi
 }
 
-# 生成节点函数（使用参数替换代替sed）
+# 生成节点函数（使用AWK代替sed）
 generate_nodes() {
     mode=$1
     ip_file=$2
@@ -36,27 +36,30 @@ generate_nodes() {
             continue
         fi
         
-        # 移除可能的回车符和        # 移除可能的回车符和空格
-        line=$(echo "$line" | tr -d '\r' | xargs)
+        # 移除可能的回车符和空格
+        line_clean=$(echo "$line" | tr -d '\r' | xargs)
         
         # 生成节点名称
-        node_name="vpsus-$mode$line"
+        node_name="vpsus-$mode$line_clean"
         
         # 生成服务器地址
-        if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if [[ $line_clean =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             # IPv4地址
-            server_address="${line}"
-        elif [[ $line =~ ^[a-fA-F0-9:]+$ ]]; then
+            server_address="${line_clean}"
+        elif [[ $line_clean =~ ^[a-fA-F0-9:]+$ ]]; then
             # IPv6地址
-            server_address="[${line}]"
+            server_address="[${line_clean}]"
         else
             # 域名
-            server_address="${line}"
+            server_address="${line_clean}"
         fi
         
-        # 使用参数替换处理模板
-        new_node="${template_line//服务器地址/$server_address}"
-        new_node="${new_node//节点名/$node_name}"
+        # 使用AWK进行安全替换
+        new_node=$(echo "$template_line" | awk -v addr="$server_address" -v name="$node_name" '{
+            gsub("服务器地址", addr);
+            gsub("节点名", name);
+            print
+        }')
         
         # 保存节点到文件
         echo "$new_node" >> jd.txt
@@ -105,8 +108,6 @@ main() {
     
     # 自动生成所有节点
     auto_generate_all_nodes
-    
-    # 添加enerate_all_nodes
     
     # 添加退出提示
     echo ""
