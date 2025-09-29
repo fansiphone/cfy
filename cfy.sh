@@ -61,15 +61,12 @@ manual_ip_selection() {
 # 云优选模式
 cloud_ip_selection() {
     echo -e "${BLUE}正在获取云优选 IP 列表...${PLAIN}"
+    # 只获取IPv4地址，忽略IPv6
     curl -sSL http://speed.cloudflare.com/__down?bytes=1000 -o cf_ipv4.txt
-    curl -sSL http://[2606:4700:4700::1111]/__down?bytes=1000 -o cf_ipv6.txt
-    
-    # 合并IPv4和IPv6地址
-    cat cf_ipv4.txt cf_ipv6.txt > cf_all_ip.txt
     
     # 生成节点配置
-    generate_config "云优选" "cf_all_ip.txt"
-    rm -f cf_ipv4.txt cf_ipv6.txt cf_all_ip.txt
+    generate_config "云优选" "cf_ipv4.txt"
+    rm -f cf_ipv4.txt
 }
 
 # 自优选模式
@@ -88,24 +85,70 @@ generate_config() {
     ip_file=$2
     output_file="warp_nodes.txt"
     
-    rm -f $output_file
+    if [ ! -f "$ip_file" ]; then
+        echo -e "${RED}错误：IP文件不存在${PLAIN}"
+        return
+    fi
     
-    while read line; do
+    # 创建临时文件
+    tmp_file="tmp_${output_file}"
+    > "$tmp_file"
+    
+    while IFS= read -r line; do
+        # 跳过空行
+        if [ -z "$line" ]; then
+            continue
+        fi
+        
+        # 移除可能的回车符
+        line=$(echo "$line" | tr -d '\r')
+        
+        # 判断是IP还是域名
         if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             # IPv4地址
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
         elif [[ $line =~ ^[a-fA-F0-9:]+$ ]]; then
             # IPv6地址
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@[$line]:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
-        elif [[ $line =~ [a-zA-Z0-9\.-]+\.[a-zA-Z]{2,} ]]; then
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@[$line]:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
+        elif [[ $line =~ [a-zA-Z] ]]; then
             # 域名
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
         fi
-    done < $ip_file
+    done < "$ip_file"
     
-    # 保存到 jd.txt 并打印路径
-    cp -f $output_file jd.txt
-    echo -e "${GREEN}配置已保存到:${PLAIN} $(pwd)/jd.txt"
+    # 追加到主文件
+    cat "$tmp_file" >> "$output_file"
+    rm -f "$tmp_file"
+    
+    # 计数生成的节点
+    count=$(grep -c 'vless:' "$output_file")
+    echo -e "${GREEN}已生成 ${count} 个 ${mode} 节点${PLAIN}"
+}
+
+# 自动生成所有配置
+auto_generate_all() {
+    echo -e "${BLUE}开始生成所有配置...${PLAIN}"
+    
+    # 清空节点文件
+    output_file="warp_nodes.txt"
+    > "$output_file"
+    
+    # 生成三种配置
+    manual_ip_selection
+    cloud_ip_selection
+    self_ip_selection
+    
+    # 保存到 jd.txt
+    cp -f "$output_file" jd.txt
+    echo ""
+    echo -e "${GREEN}所有配置已生成并保存到:${PLAIN}"
+    echo -e "${YELLOW}节点配置文件:${PLAIN} $(pwd)/$output_file"
+    echo -e "${YELLOW}JD保存文件:${PLAIN} $(pwd)/jd.txt"
+    echo ""
+    
+    # 显示总节点数
+    total_count=$(grep -c 'vless:' "$output_file")
+    echo -e "${GREEN}总计生成 ${total_count} 个节点${PLAIN}"
 }
 
 # 主函数
@@ -164,26 +207,6 @@ main() {
             ;;
         esac
     done
-}
-
-# 自动生成所有配置
-auto_generate_all() {
-    echo -e "${BLUE}开始生成所有配置...${PLAIN}"
-    
-    # 生成三种配置
-    manual_ip_selection
-    cloud_ip_selection
-    self_ip_selection
-    
-    # 合并所有配置
-    cat warp_nodes.txt > all_nodes.txt
-    echo ""
-    echo -e "${GREEN}所有配置已生成并保存到:${PLAIN}"
-    echo -e "${YELLOW}手动优选配置:${PLAIN} $(pwd)/cf_all_ip.txt"
-    echo -e "${YELLOW}云优选配置:${PLAIN} $(pwd)/cf_ipv4.txt 和 $(pwd)/cf_ipv6.txt"
-    echo -e "${YELLOW}自优选配置:${PLAIN} $(pwd)/self_ip.txt"
-    echo -e "${YELLOW}节点配置文件:${PLAIN} $(pwd)/warp_nodes.txt"
-    echo -e "${YELLOW}JD保存文件:${PLAIN} $(pwd)/jd.txt"
 }
 
 # 执行自动生成
