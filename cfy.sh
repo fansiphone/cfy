@@ -60,9 +60,8 @@ check_deps() {
 
 get_all_optimized_ips() {
     local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
-    local url_v6="https://www.wetest.vip/page/cloudfront/address_v6.html"
     
-    echo -e "${YELLOW}正在合并获取所有优选 IP (IPv4 & IPv6)...${NC}"
+    echo -e "${YELLOW}正在获取优选 IPv4 IP 列表...${NC}"
     
     local paired_data_file
     paired_data_file=$(mktemp)
@@ -74,14 +73,21 @@ get_all_optimized_ips() {
         local html_content=$(curl -s "$url")
         if [ -z "$html_content" ]; then echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"; return; fi
         local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
-        local ips=$(echo "$table_rows" | sed -n 's/.*data-label="优选地址">\([^<]*\)<.*/\1/p')
-        local isps=$(echo "$table_rows" | sed -n 's/.*data-label="线路名称">\([^<]*\)<.*/\1/p')
-        paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
+        # 提取：第一列 ISP，第二列 IP（跳过空行或无效）
+        local ips=$(echo "$table_rows" | sed -n 's/.*<td>\([^<]*\)<\/td>\s*<td>\([^<]*\)<\/td>.*/\2/p' | grep -E '^[0-9]+\.')
+        local isps=$(echo "$table_rows" | sed -n 's/.*<td>\([^<]*\)<\/td>\s*<td>[^<]*<\/td>.*/\1/p' | grep -v '^$')
+        # 确保配对长度一致，跳过无效
+        local min_len=$([ ${#ips[@]} -lt ${#isps[@]} ] && echo ${#ips[@]} || echo ${#isps[@]})
+        for ((j=0; j<$min_len; j++)); do
+            if [ -n "${ips[$j]}" ] && [ -n "${isps[$j]}" ]; then
+                echo "${ips[$j]} ${isps[$j]}" >> "$paired_data_file"
+            fi
+        done
     }
 
-    parse_url "$url_v4" "IPv4"; parse_url "$url_v6" "IPv6"
+    parse_url "$url_v4" "IPv4"
 
-    if ! [ -s "$paired_data_file" ]; then echo -e "${RED}无法从任何来源解析出优选 IP 地址.${NC}"; return 1; fi
+    if ! [ -s "$paired_data_file" ]; then echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"; return 1; fi
 
     declare -g -a ip_list isp_list; local shuffled_pairs
     mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
@@ -90,7 +96,27 @@ get_all_optimized_ips() {
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
     done
     if [ ${#ip_list[@]} -eq 0 ]; then echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"; return 1; fi
-    echo -e "${GREEN}成功合并获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"; return 0
+    echo -e "${GREEN}成功获取 ${#ip_list[@]} 个优选 IPv4 地址, 列表已随机打乱.${NC}"; return 0
+}
+
+get_self_ips() {
+    local url="https://n5105.iepose.cn/output/abc/dy/cf.txt"
+    
+    echo -e "${YELLOW}正在从 TXT 文件获取 IP/域名列表...${NC}"
+    
+    local txt_content=$(curl -s "$url")
+    if [ -z "$txt_content" ]; then echo -e "${RED}无法获取 TXT 内容，请检查网络或链接可用性.${NC}"; return 1; fi
+    
+    declare -g -a ip_list
+    mapfile -t ip_list <<< "$txt_content"
+    # 过滤空行和无效行（IP 或域名格式）
+    ip_list=($(printf '%s\n' "${ip_list[@]}" | grep -E '^[0-9]+\.|^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' | grep -v '^$'))
+    
+    if [ ${#ip_list[@]} -eq 0 ]; then echo -e "${RED}TXT 文件解析成功, 但未找到任何有效的 IP/域名.${NC}"; return 1; fi
+    
+    # 随机打乱
+    ip_list=($(printf '%s\n' "${ip_list[@]}" | shuf))
+    echo -e "${GREEN}成功获取 ${#ip_list[@]} 个 IP/域名地址, 列表已随机打乱.${NC}"; return 0
 }
 
 main() {
@@ -152,21 +178,26 @@ main() {
     local original_ps=$(echo "$original_json" | jq -r .ps)
     echo -e "${GREEN}已选择: $original_ps${NC}"
     
-    echo -e "${YELLOW}请选择要使用的 IP 地址来源:${NC}"
+    echo -e "${YELLOW}请选择要使用的 IP/域名 地址来源:${NC}"
     echo "  1) Cloudflare 官方 (手动优选)"
     echo "  2) 云优选  "
+    echo "  3) 自优选 (cf.txt)"
     
-    local ip_source_choice; local use_optimized_ips=false
+    local ip_source_choice; local use_optimized_ips=false; local use_self_ips=false
     while true; do
-        read -p "请输入选项编号 (1-2): " ip_source_choice
+        read -p "请输入选项编号 (1-3): " ip_source_choice
         if [[ "$ip_source_choice" == "1" ]]; then break;
         elif [[ "$ip_source_choice" == "2" ]]; then use_optimized_ips=true; break;
+        elif [[ "$ip_source_choice" == "3" ]]; then use_self_ips=true; break;
         else echo -e "${RED}无效的输入, 请重试.${NC}"; fi
     done
     
-    declare -a ip_list isp_list; local num_to_generate=0
+    declare -a ip_list isp_list; local num_to_generate=0; declare -a output_links
     if $use_optimized_ips; then
         get_all_optimized_ips || exit 1
+        num_to_generate=${#ip_list[@]}
+    elif $use_self_ips; then
+        get_self_ips || exit 1
         num_to_generate=${#ip_list[@]}
     else
         echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
@@ -185,21 +216,42 @@ main() {
     if $use_optimized_ips; then
         for ((i=0; i<$num_to_generate; i++)); do
             local current_ip=${ip_list[$i]}; local isp_name=${isp_list[$i]}
-            local new_ps="${original_ps}-优选${isp_name}"
+            if [ -z "$current_ip" ] || [ -z "$isp_name" ]; then continue; fi
+            local new_ps="vpsus-${isp_name}${current_ip}"
             local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
             local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
-            echo "vmess://${new_base64}"
+            local new_url="vmess://${new_base64}"
+            echo "$new_url"
+            output_links+=("$new_url")
+        done
+    elif $use_self_ips; then
+        for ((i=0; i<$num_to_generate; i++)); do
+            local current_ip=${ip_list[$i]}
+            if [ -z "$current_ip" ]; then continue; fi
+            local new_ps="vpsus-自选${current_ip}"
+            local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+            local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
+            local new_url="vmess://${new_base64}"
+            echo "$new_url"
+            output_links+=("$new_url")
         done
     else
         for ((i=0; i<$num_to_generate; i++)); do
             local random_ip_range=${ip_list[$((RANDOM % ${#ip_list[@]}))]}
             local ip_from_range=${random_ip_range%/*}
-            local modified_json=$(echo "$original_json" | jq --arg new_add "$ip_from_range" '.add = $new_add')
+            local new_ps="vpsus-CF${ip_from_range}"
+            local modified_json=$(echo "$original_json" | jq --arg new_add "$ip_from_range" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
             local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
-            echo "vmess://${new_base64}"
+            local new_url="vmess://${new_base64}"
+            echo "$new_url"
+            output_links+=("$new_url")
         done
     fi
     echo "---"; echo -e "${GREEN}共 ${num_to_generate} 个链接已生成完毕.${NC}"
+    
+    # 保存到 jd.txt（覆盖）
+    printf "%s\n" "${output_links[@]}" > ./jd.txt
+    echo -e "${GREEN}结果已保存至 ./jd.txt${NC}"
 }
 
 check_deps
