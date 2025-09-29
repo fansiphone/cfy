@@ -2,7 +2,7 @@
 
 # cfy - Cloudflare IP V2Ray/VLESS Node Generator
 # Modified based on https://github.com/byJoey/cfy
-# Modifications: Auto-generate all 3 modes, no selection; Add self-optimized source; IPv4 only; Custom naming; Save to jd.txt
+# Modifications: Added self-optimized source; Custom naming; Save all nodes to jd.txt (overwrite)
 
 set -euo pipefail
 
@@ -85,13 +85,13 @@ generate_node() {
     echo "vmess://$new_base64"
 }
 
-# Main generation logic: generate all 3 modes
+# Main generation logic
 generate_all_nodes() {
     local output=""
     local jd_file="$(pwd)/jd.txt"
 
-    # 1) Cloudflare 官方 (手动优选) - IPv4 only, generate 10 random IPs
-    echo -e "${GREEN}1) Generating from Cloudflare Official (手动优选)...${NC}"
+    # 1) Cloudflare 官方 - IPv4 only, generate 10 random IPs
+    echo -e "${GREEN}Generating from Cloudflare Official IPs...${NC}"
     local cidrs=$(curl -s https://www.cloudflare.com/ips-v4)
     local num_generated=0
     if [ -n "$cidrs" ]; then
@@ -117,12 +117,12 @@ generate_all_nodes() {
     fi
 
     # 2) 云优选 - IPv4 only, parse HTML table
-    echo -e "${GREEN}2) Generating from 云优选...${NC}"
+    echo -e "${GREEN}Generating from 云优选 IPs...${NC}"
     local html=$(curl -s https://api.uouin.com/cloudflare.html)
     local count=0
     if [ -n "$html" ]; then
-        # Extract operator and IP from <td>线路</td><td>IP</td> patterns
-        local opt_lines=$(echo "$html" | sed -n 's/.*<td>\(电信\|联通\|移动\|多线\)</td>.*<td>\([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)</td>.*/\1 \2/p')
+        # Parse table for operator and IP
+        local opt_lines=$(echo "$html" | awk -F'|' '/电信|联通|移动|多线/ {for(i=1;i<=NF;i++) gsub(/^[ \t]+|[ \t]+$/, "", $i); if($3 ~ /^(电信|联通|移动|多线)$/ && $4 ~ /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/) print $3 " " $4}')
         if [ -n "$opt_lines" ]; then
             while IFS= read -r line; do
                 local operator=$(echo "$line" | awk '{print $1}')
@@ -144,21 +144,19 @@ generate_all_nodes() {
         echo -e "${YELLOW}Failed to fetch optimized IPs.${NC}"
     fi
 
-    # 3) 自优选 - From custom txt, IP or domain per line
-    echo -e "${GREEN}3) Generating from 自优选...${NC}"
+    # 3) 自优选 - From custom txt, each line as IP or domain
+    echo -e "${GREEN}Generating from 自优选 source...${NC}"
     local self_content=$(curl -s http://nas.848588.xyz:18080/output/abc/dy/cf.txt)
     local self_count=0
     if [ -n "$self_content" ]; then
-        local self_adds=$(echo "$self_content" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -50)
+        local self_adds=$(echo "$self_content" | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' | head -50)
         if [ -n "$self_adds" ]; then
             while IFS= read -r add; do
-                if [[ "$add" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$add" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                    local ps="vpsus-自选[$add]"
-                    local node=$(generate_node "$add" "$ps")
-                    if [ -n "$node" ]; then
-                        output+="$node"$'\n'
-                        ((self_count++))
-                    fi
+                local ps="vpsus-自选[$add]"
+                local node=$(generate_node "$add" "$ps")
+                if [ -n "$node" ]; then
+                    output+="$node"$'\n'
+                    ((self_count++))
                 fi
             done <<< "$self_adds"
             echo -e "${GREEN}Generated $self_count self-optimized nodes.${NC}"
