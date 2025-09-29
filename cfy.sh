@@ -100,7 +100,7 @@ get_all_optimized_ips() {
 }
 
 get_self_ips() {
-    local url="https://n5105.iepose.cn/output/abc/dy/cf.txt"
+    local url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
     
     echo -e "${YELLOW}正在从 TXT 文件获取 IP/域名列表...${NC}"
     
