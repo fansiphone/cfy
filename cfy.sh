@@ -53,8 +53,8 @@ manual_ip_selection() {
     # 合并IPv4和IPv6地址
     cat cf_ipv4.txt cf_ipv6.txt > cf_all_ip.txt
     
-    # 生成节点配置
-    generate_config "CF" "cf_all_ip.txt"
+    # 生成节点配置并使用模板
+    generate_nodes_from_template "CF" "cf_all_ip.txt"
     rm -f cf_ipv4.txt cf_ipv6.txt cf_all_ip.txt
 }
 
@@ -64,8 +64,8 @@ cloud_ip_selection() {
     # 只获取IPv4地址，忽略IPv6
     curl -sSL http://speed.cloudflare.com/__down?bytes=1000 -o cf_ipv4.txt
     
-    # 生成节点配置
-    generate_config "云优选" "cf_ipv4.txt"
+    # 生成节点配置并使用模板
+    generate_nodes_from_template "云优选" "cf_ipv4.txt"
     rm -f cf_ipv4.txt
 }
 
@@ -74,26 +74,26 @@ self_ip_selection() {
     echo -e "${BLUE}正在获取自优选 IP 列表...${PLAIN}"
     curl -sSL http://nas.848588.xyz:18080/output/abc/dy/cf.txt -o self_ip.txt
     
-    # 生成节点配置
-    generate_config "自选" "self_ip.txt"
+    # 生成节点配置并使用模板
+    generate_nodes_from_template "自选" "self_ip.txt"
     rm -f self_ip.txt
 }
 
-# 生成配置文件函数
-generate_config() {
+# 从模板生成节点函数
+generate_nodes_from_template() {
     mode=$1
     ip_file=$2
-    output_file="warp_nodes.txt"
     
-    if [ ! -f "$ip_file" ]; then
-        echo -e "${RED}错误：IP文件不存在${PLAIN}"
+    # 检查模板文件是否存在
+    if [ ! -f "/etc/sing-box/url.txt" ]; then
+        echo -e "${RED}错误：模板文件 /etc/sing-box/url.txt 不存在${PLAIN}"
         return
     fi
     
-    # 创建临时文件
-    tmp_file="tmp_${output_file}"
-    > "$tmp_file"
+    # 读取模板配置
+    template_line=$(head -n 1 /etc/sing-box/url.txt)
     
+    # 处理IP文件
     while IFS= read -r line; do
         # 跳过空行
         if [ -z "$line" ]; then
@@ -101,54 +101,46 @@ generate_config() {
         fi
         
         # 移除可能的回车符
-        line=$(echo "$line" | tr -d '\r')
+        line=$(echo "$line" | tr -d '\r' | xargs)
         
-        # 判断是IP还是域名
+        # 生成节点名称
+        node_name="vpsus-$mode$line"
+        
+        # 生成服务器地址
         if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             # IPv4地址
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
+            server_address="${line}"
         elif [[ $line =~ ^[a-fA-F0-9:]+$ ]]; then
             # IPv6地址
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@[$line]:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
-        elif [[ $line =~ [a-zA-Z] ]]; then
+            server_address="[${line}]"
+        else
             # 域名
-            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> "$tmp_file"
+            server_address="${line}"
         fi
+        
+        # 使用模板生成节点配置
+        new_node=$(echo "$template_line" | sed "s/服务器地址/${server_address}/g; s/节点名/${node_name}/g")
+        
+        # 保存节点到文件
+        echo "$new_node" >> jd.txt
     done < "$ip_file"
-    
-    # 追加到主文件
-    cat "$tmp_file" >> "$output_file"
-    rm -f "$tmp_file"
-    
-    # 计数生成的节点
-    count=$(grep -c 'vless:' "$output_file")
-    echo -e "${GREEN}已生成 ${count} 个 ${mode} 节点${PLAIN}"
 }
 
 # 自动生成所有配置
 auto_generate_all() {
     echo -e "${BLUE}开始生成所有配置...${PLAIN}"
     
-    # 清空节点文件
-    output_file="warp_nodes.txt"
-    > "$output_file"
+    # 清空输出文件
+    > jd.txt
     
     # 生成三种配置
     manual_ip_selection
     cloud_ip_selection
     self_ip_selection
     
-    # 保存到 jd.txt
-    cp -f "$output_file" jd.txt
     echo ""
-    echo -e "${GREEN}所有配置已生成并保存到:${PLAIN}"
-    echo -e "${YELLOW}节点配置文件:${PLAIN} $(pwd)/$output_file"
-    echo -e "${YELLOW}JD保存文件:${PLAIN} $(pwd)/jd.txt"
-    echo ""
-    
-    # 显示总节点数
-    total_count=$(grep -c 'vless:' "$output_file")
-    echo -e "${GREEN}总计生成 ${total_count} 个节点${PLAIN}"
+    echo -e "${GREEN}所有配置已生成并保存到:${PLAIN} $(pwd)/jd.txt"
+    echo -e "${GREEN}总节点数:${PLAIN} $(wc -l < jd.txt)"
 }
 
 # 主函数
@@ -209,5 +201,5 @@ main() {
     done
 }
 
-# 执行自动生成
+# 执行自动生成三种来源的所有节点
 auto_generate_all
