@@ -7,11 +7,6 @@ YELLOW="\033[33m"
 BLUE="\033[36m"
 PLAIN="\033[0m"
 
-# 转义特殊字符函数
-escape_sed() {
-    echo "$1" | sed -e 's/[\/&]/\\&/g' -e 's/|/\\|/g' -e 's/`/\\`/g' -e 's/;/\\;/g'
-}
-
 # 检查模板文件是否存在
 check_template() {
     if [ ! -f "/etc/sing-box/url.txt" ]; then
@@ -20,7 +15,7 @@ check_template() {
     fi
 }
 
-# 生成节点函数
+# 生成节点函数（使用参数替换代替sed）
 generate_nodes() {
     mode=$1
     ip_file=$2
@@ -41,7 +36,7 @@ generate_nodes() {
             continue
         fi
         
-        # 移除可能的回车符和空格
+        # 移除可能的回车符和        # 移除可能的回车符和空格
         line=$(echo "$line" | tr -d '\r' | xargs)
         
         # 生成节点名称
@@ -59,13 +54,9 @@ generate_nodes() {
             server_address="${line}"
         fi
         
-        # 转义特殊字符
-        server_address_escaped=$(escape_sed "$server_address")
-        node_name_escaped=$(escape_sed "$node_name")
-        template_line_escaped=$(escape_sed "$template_line")
-        
-        # 使用模板生成节点配置
-        new_node=$(echo "$template_line" | sed "s|服务器地址|${server_address_escaped}|g" | sed "s|节点名|${node_name_escaped}|g")
+        # 使用参数替换处理模板
+        new_node="${template_line//服务器地址/$server_address}"
+        new_node="${new_node//节点名/$node_name}"
         
         # 保存节点到文件
         echo "$new_node" >> jd.txt
@@ -114,6 +105,8 @@ main() {
     
     # 自动生成所有节点
     auto_generate_all_nodes
+    
+    # 添加enerate_all_nodes
     
     # 添加退出提示
     echo ""
