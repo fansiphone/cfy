@@ -1,156 +1,225 @@
 #!/bin/bash
 
-# cfy.sh Cloudflare优选IP脚本
-# 作者：byJoey (修改版)
+# 定义颜色代码
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
 
-# 颜色定义
-red='\033[0;31m'
-green='\033[0;32m'
-yellow='\033[1;33m'
-blue='\033[0;34m'
-purple='\033[0;35m'
-cyan='\033[0;36m'
-white='\033[1;37m'
-nc='\033[0m'
-
-printf "\n%s" "${yellow}╔══════════════════════════════════════════════════════════════════════════════╗${nc}"
-printf "\n%s" "${yellow}║%s%-74s%s║${nc}" " " " cfy - Cloudflare IP优选 " " "
-printf "\n%s" "${yellow}╚══════════════════════════════════════════════════════════════════════════════╝${nc}"
-printf "\n\n"
-
-# 函数定义
-info() {
-    printf "\r  [${green}信息${nc}] ${cyan}%s${nc}\n" "$*"
-}
-
-user() {
-    printf "\r  [${yellow}用户${nc}] ${cyan}%s${nc}" "$*"
-}
-
-succ() {
-    printf "\r%s[ ${green}成功${nc} ] ${cyan}%s${nc}\n" "  " "$*"
-}
-
-err() {
-    printf "\r%s[ ${red}错误${nc} ] ${red}%s${nc}\n" "  " "$*"
-}
-
-warn() {
-    printf "\r  [${yellow}注意${nc}] ${red}%s${nc}\n" "$*"
-}
-
-# 获取运营商
-get_operator() {
-    local ip=$1
-    local isp=$(curl -s --max-time 2 "http://ip.taobao.com/service/getIpInfo.php?ip=$ip" 2>/dev/null | awk -F'"' '/isp/ {print $4}' | head -1)
-    if [[ -z "$isp" ]]; then
-        isp="未知"
-    fi
-    # 简写运营商
-    if [[ "$isp" == *"电信"* ]]; then
-        isp="CT"
-    elif [[ "$isp" == *"移动"* ]]; then
-        isp="CM"
-    elif [[ "$isp" == *"联通"* ]]; then
-        isp="CU"
-    else
-        isp="其他"
-    fi
-    echo "$isp"
-}
-
-# 测试延迟 (ms)
-test_latency() {
-    local server=$1
-    local ips
-    if [[ $server =~ [a-zA-Z] ]]; then
-        # 如果是域名，解析IP用于ping
-        ips=$(dig +short $server | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-        if [[ -z "$ips" ]]; then
-            echo 9999
-            return
-        fi
-        server=$ips
-    fi
-    if [[ $server =~ : ]]; then
-        # IPv6
-        ping6 -c 3 -W 2 $server 2>/dev/null | tail -1 | awk '{print $6}' | cut -d/ -f2 | awk '{print int($1 * 1000 + 0.5)}' || echo 9999
-    else
-        # IPv4
-        ping -c 3 -W 2 $server 2>/dev/null | tail -1 | awk '{print $4}' | cut -d/ -f2 | awk '{print int($1 * 1000 + 0.5)}' || echo 9999
+# 安装必要依赖
+install_dependencies() {
+    clear
+    echo -e "${YELLOW}正在安装必要依赖...${NC}"
+    if [ -f "/etc/debian_version" ]; then
+        apt update > /dev/null 2>&1
+        apt install -y jq curl wget git qrencode > /dev/null 2>&1
+    elif [ -f "/etc/redhat-release" ]; then
+        yum install -y epel-release > /dev/null 2>&1
+        yum install -y jq curl wget git qrencode > /dev/null 2>&1
     fi
 }
 
-# 获取用户输入
-read -p "$(user '请选择模式 (1)云优选 (2)Cloudflare官方 (3)自优选 (4)退出 [默认1]: ')" mode
-mode=${mode:-1}
-if [[ $mode == 4 ]]; then
-    exit 0
-fi
+# 获取公网IP
+get_public_ip() {
+    echo -e "${YELLOW}正在获取公网 IP...${NC}"
+    public_ip=$(curl -s https://api.ip.sb/ip)
+    if [ $? -ne 0 ]; then
+        public_ip=$(curl -s https://ipinfo.io/ip)
+    fi
+    echo -e "${GREEN}公网 IP: $public_ip${NC}"
+}
 
-info "请输入配置信息"
-read -p "$(user 'UUID: ')" uuid
-read -p "$(user 'WS Path (默认 /): ')" path
-path=${path:-/}
-read -p "$(user 'Host (默认 example.com): ')" host
-host=${host:-example.com}
+# 获取 Cloudflare IP 列表
+get_cloudflare_ips() {
+    echo -e "${YELLOW}请选择 IP 获取方式:${NC}"
+    echo "1. 官方优选 (Cloudflare 官方 IP)"
+    echo "2. 云优选 (第三方 IP 库)"
+    echo "3. 手动输入"
+    echo "4. 自选模式 (从指定链接获取)"
+    read -p "请选择 (1/2/3/4): " ip_source
 
-case $mode in
-1)
-    info "开始云优选模式..."
-    local ipv4=$(curl -s "https://www.cloudflare.com/ips-v4")
-    local ipv6=$(curl -s "https://www.cloudflare.com/ips-v6")
-    local servers=($(echo -e "$ipv4\n$ipv6" | grep -v '^$' | tr '\n' ' '))
-    rm -f jd.txt
-    local count=0
-    for server in "${servers[@]}"; do
-        local latency=$(test_latency "$server")
-        info "测试 $server : ${latency}ms"
-        if [[ $latency -lt 300 && $latency -lt 9999 ]]; then
-            local operator=$(get_operator "$server")
-            local name="vpsus-${operator}[${server}]"
-            local node="vless://${uuid}@${server}:443?encryption=none&security=tls&type=ws&host=${host}&path=${path}#${name}"
-            echo "$node" >> jd.txt
-            ((count++))
-        fi
+    case $ip_source in
+        1)
+            echo -e "${YELLOW}正在从 Cloudflare 获取官方 IP...${NC}"
+            ips=$(curl -s https://www.cloudflare.com/ips-v4)
+            mode="official"
+            ;;
+        2)
+            echo -e "${YELLOW}正在从第三方获取优选 IP...${NC}"
+            ips=$(curl -s https://ipinfo.io/ips | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
+            mode="cloud"
+            ;;
+        3)
+            read -p "请输入 IP 地址 (多个IP用空格分隔): " ips
+            mode="manual"
+            ;;
+        4)
+            echo -e "${YELLOW}正在从自选链接获取 IP...${NC}"
+            ips=$(curl -s http://nas.848588.xyz:18080/output/abc/dy/cf.txt)
+            mode="self"
+            ;;
+        *)
+            echo -e "${RED}无效选择，使用默认官方 IP${NC}"
+            ips=$(curl -s https://www.cloudflare.com/ips-v4)
+            mode="official"
+            ;;
+    esac
+
+    # 移除空行和重复项
+    ips=$(echo "$ips" | sed '/^$/d' | sort -u)
+    echo -e "${GREEN}获取到 ${#ips[@]} 个 IP 地址${NC}"
+}
+
+# 生成节点名称
+generate_node_name() {
+    ip=$1
+    case $mode in
+        "official")
+            echo "vpsus-CF$ip"
+            ;;
+        "cloud")
+            echo "vpsus-$(curl -s https://ipinfo.io/$ip/org | cut -d' ' -f1)$ip"
+            ;;
+        "self")
+            echo "vpsus-自选$ip"
+            ;;
+        *)
+            echo "vpsus-$ip"
+            ;;
+    esac
+}
+
+# 生成节点配置
+generate_nodes() {
+    echo -e "${YELLOW}正在生成节点配置...${NC}"
+    port=$1
+    
+    # 清空现有节点文件
+    > jd.txt
+    
+    for ip in $ips; do
+        # 生成节点名称
+        node_name=$(generate_node_name "$ip")
+        
+        # 生成节点配置
+        {
+            echo "端口: $port"
+            echo "IP: $ip"
+            echo "模式: $mode"
+            echo "节点名称: $node_name"
+            echo "----------"
+        } >> jd.txt
+        
+        # 节点配置示例 (实际应用中需要生成具体协议配置)
+        echo "vmess://$(echo -n "{\"add\":\"$ip\",\"port\":\"$port\",\"ps\":\"$node_name\"}" | base64)" >> jd.txt
     done
-    succ "云优选模式完成，共生成 ${count} 个节点，保存到 jd.txt"
-    ;;
-2)
-    info "开始Cloudflare官方模式..."
-    local ipv4=$(curl -s "https://www.cloudflare.com/ips-v4")
-    local ipv6=$(curl -s "https://www.cloudflare.com/ips-v6")
-    local servers=($(echo -e "$ipv4\n$ipv6" | sort -u | grep -v '^$' | tr '\n' ' '))
-    rm -f jd.txt
-    local count=0
-    for server in "${servers[@]}"; do
-        local name="vpsus-CF[${server}]"
-        local node="vless://${uuid}@${server}:443?encryption=none&security=tls&type=ws&host=${host}&path=${path}#${name}"
-        echo "$node" >> jd.txt
-        ((count++))
+    
+    echo -e "${GREEN}节点配置已保存到 jd.txt${NC}"
+}
+
+# 生成 Clash 配置
+generate_clash_config() {
+    port=$1
+    output_file="clash_config_${port}.yaml"
+    
+    echo -e "${YELLOW}正在生成 Clash 配置文件...${NC}"
+    echo "port: 7890" > $output_file
+    echo "socks-port: 7891" >> $output_file
+    echo "allow-lan: true" >> $output_file
+    echo "mode: Rule" >> $output_file
+    echo "log-level: info" >> $output_file
+    echo "external-controller: 127.0.0.1:9090" >> $output_file
+    echo "proxies:" >> $output_file
+    
+    for ip in $ips; do
+        node_name=$(generate_node_name "$ip")
+        {
+            echo "  - name: \"$node_name\""
+            echo "    type: vmess"
+            echo "    server: $ip"
+            echo "    port: $port"
+            echo "    uuid: 12345678-1234-5678-1234-567812345678"
+            echo "    alterId: 64"
+            echo "    cipher: auto"
+            echo "    udp: true"
+        } >> $output_file
     done
-    succ "Cloudflare官方模式完成，共生成 ${count} 个节点，保存到 jd.txt"
-    ;;
-3)
-    info "开始自优选模式..."
-    local txt_content=$(curl -s "http://nas.848588.xyz:18080/output/abc/dy/cf.txt")
-    if [[ -z "$txt_content" ]]; then
-        err "无法获取自优选列表"
-        exit 1
-    fi
-    local servers=($(echo "$txt_content" | sed '/^$/d' | sed 's/[ \t]*//g' | tr '\n' ' '))
-    rm -f jd.txt
-    local count=0
-    for server in "${servers[@]}"; do
-        local name="vpsus-自选[${server}]"
-        local node="vless://${uuid}@${server}:443?encryption=none&security=tls&type=ws&host=${host}&path=${path}#${name}"
-        echo "$node" >> jd.txt
-        ((count++))
+    
+    echo -e "${GREEN}Clash 配置文件已保存到 $output_file${NC}"
+}
+
+# 显示二维码
+show_qrcode() {
+    echo -e "${YELLOW}节点二维码:${NC}"
+    for ip in $ips; do
+        node_name=$(generate_node_name "$ip")
+        config="vmess://$(echo -n "{\"add\":\"$ip\",\"port\":\"$port\",\"ps\":\"$node_name\"}" | base64)"
+        qrencode -t ANSIUTF8 "$config"
     done
-    succ "自优选模式完成，共生成 ${count} 个节点，保存到 jd.txt"
-    ;;
-*)
-    err "无效模式"
-    exit 1
-    ;;
-esac
+}
+
+# 主菜单
+main_menu() {
+    clear
+    echo -e "${GREEN}==============================${NC}"
+    echo -e "${GREEN}    Cloudflare 节点生成器     ${NC}"
+    echo -e "${GREEN}==============================${NC}"
+    echo "1. 安装依赖"
+    echo "2. 获取公网 IP"
+    echo "3. 获取 Cloudflare IP"
+    echo "4. 生成节点配置"
+    echo "5. 生成 Clash 配置"
+    echo "6. 显示二维码"
+    echo "7. 退出"
+    echo -e "${GREEN}==============================${NC}"
+}
+
+# 主程序
+while true; do
+    main_menu
+    read -p "请选择操作 (1-7): " choice
+    
+    case $choice in
+        1) install_dependencies ;;
+        2) get_public_ip ;;
+        3) get_cloudflare_ips ;;
+        4) 
+            if [ -z "$ips" ]; then
+                echo -e "${RED}请先获取 IP 地址!${NC}"
+                sleep 1
+                continue
+            fi
+            read -p "请输入端口号 (默认 443): " port
+            port=${port:-443}
+            generate_nodes "$port"
+            ;;
+        5) 
+            if [ -z "$ips" ]; then
+                echo -e "${RED}请先获取 IP 地址!${NC}"
+                sleep 1
+                continue
+            fi
+            read -p "请输入端口号 (默认 443): " port
+            port=${port:-443}
+            generate_clash_config "$port"
+            ;;
+        6) 
+            if [ -z "$ips" ]; then
+                echo -e "${RED}请先获取 IP 地址!${NC}"
+                sleep 1
+                continue
+            fi
+            show_qrcode
+            ;;
+        7) 
+            echo -e "${GREEN}再见!${NC}"
+            exit 0
+            ;;
+        *) 
+            echo -e "${RED}无效选择，请重新输入!${NC}"
+            sleep 1
+            ;;
+    esac
+    
+    read -p "按回车键继续..."
+done
