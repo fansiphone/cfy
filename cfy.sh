@@ -1,194 +1,190 @@
 #!/bin/bash
 
-# cfy - Cloudflare IP V2Ray/VLESS Node Generator
-# Modified Version based on https://github.com/byJoey/cfy
-# Modifications: Added self-optimized source, auto-generate all 3 modes, custom naming, save to jd.txt
+# 定义颜色代码
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[36m"
+PLAIN="\033[0m"
 
-set -euo pipefail
+# 获取IP地址函数
+ip_address() {
+    ipv4_address=$(curl -s ipv4.ip.sb)
+    ipv6_address=$(curl -s ipv6.ip.sb)
+}
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# 显示菜单函数
+display_menu() {
+    clear
+    echo "###############################"
+    echo -e "#   ${RED}Cloudflare WARP 一键配置脚本${PLAIN}   #"
+    echo -e "# ${GREEN}作者${PLAIN}: Misaka No           #"
+    echo -e "# ${GREEN}博客${PLAIN}: https://owo.misaka.rest #"
+    echo "###############################"
+    echo ""
 
-# Check dependencies
-check_dependencies() {
-    local missing=()
-    local cmds=(jq curl base64 shuf grep sed awk)
-    for cmd in "${cmds[@]}"; do
-        if ! command -v "$cmd" &> /dev/null; then
-            missing+=("$cmd")
+    echo -e " ${GREEN}1.${PLAIN} 安装 WARP"
+    echo -e " ${GREEN}2.${PLAIN} 卸载 WARP"
+    echo -e " ${GREEN}3.${PLAIN} 手动优选 Cloudflare IP"
+    echo -e " ${GREEN}4.${PLAIN} 自动优选 Cloudflare IP"
+    echo -e " ${GREEN}5.${PLAIN} 查看当前网络状态"
+    echo -e " ${GREEN}6.${PLAIN} 重启 WARP"
+    echo -e " ${GREEN}7.${PLAIN} 查看 WARP 日志"
+    echo -e " ${GREEN}8.${PLAIN} 退出脚本"
+    echo ""
+}
+
+# 安装 WARP
+install_warp() {
+    bash <(curl -fsSL https://raw.githubusercontent.com/fscarmen/warp/main/menu.sh) 1
+}
+
+# 卸载 WARP
+uninstall_warp() {
+    bash <(curl -fsSL https://raw.githubusercontent.com/fscarmen/warp/main/menu.sh) 2
+}
+
+# 手动优选 Cloudflare IP
+manual_ip_selection() {
+    echo -e "${BLUE}正在获取 Cloudflare 官方 IP 列表...${PLAIN}"
+    curl -sSL https://www.cloudflare.com/ips-v4 -o cf_ipv4.txt
+    curl -sSL https://www.cloudflare.com/ips-v6 -o cf_ipv6.txt
+    
+    # 合并IPv4和IPv6地址
+    cat cf_ipv4.txt cf_ipv6.txt > cf_all_ip.txt
+    
+    # 生成节点配置
+    generate_config "CF" "cf_all_ip.txt"
+    rm -f cf_ipv4.txt cf_ipv6.txt cf_all_ip.txt
+}
+
+# 云优选模式
+cloud_ip_selection() {
+    echo -e "${BLUE}正在获取云优选 IP 列表...${PLAIN}"
+    curl -sSL http://speed.cloudflare.com/__down?bytes=1000 -o cf_ipv4.txt
+    curl -sSL http://[2606:4700:4700::1111]/__down?bytes=1000 -o cf_ipv6.txt
+    
+    # 合并IPv4和IPv6地址
+    cat cf_ipv4.txt cf_ipv6.txt > cf_all_ip.txt
+    
+    # 生成节点配置
+    generate_config "云优选" "cf_all_ip.txt"
+    rm -f cf_ipv4.txt cf_ipv6.txt cf_all_ip.txt
+}
+
+# 自优选模式
+self_ip_selection() {
+    echo -e "${BLUE}正在获取自优选 IP 列表...${PLAIN}"
+    curl -sSL http://nas.848588.xyz:18080/output/abc/dy/cf.txt -o self_ip.txt
+    
+    # 生成节点配置
+    generate_config "自选" "self_ip.txt"
+    rm -f self_ip.txt
+}
+
+# 生成配置文件函数
+generate_config() {
+    mode=$1
+    ip_file=$2
+    output_file="warp_nodes.txt"
+    
+    rm -f $output_file
+    
+    while read line; do
+        if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # IPv4地址
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
+        elif [[ $line =~ ^[a-fA-F0-9:]+$ ]]; then
+            # IPv6地址
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@[$line]:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
+        elif [[ $line =~ [a-zA-Z0-9\.-]+\.[a-zA-Z]{2,} ]]; then
+            # 域名
+            echo "vless://fd4f715d-da0d-4d03-87e2-2c8ee8a0e6b3@$line:443?encryption=none&security=tls&sni=www.cloudflare.com&fp=randomized&type=ws&host=www.cloudflare.com&path=%2F%3Fed%3D2048#vpsus-$mode$line" >> $output_file
         fi
+    done < $ip_file
+    
+    # 保存到 jd.txt 并打印路径
+    cp -f $output_file jd.txt
+    echo -e "${GREEN}配置已保存到:${PLAIN} $(pwd)/jd.txt"
+}
+
+# 主函数
+main() {
+    while true; do
+        display_menu
+        ip_address
+        
+        if [ -n "$ipv4_address" ]; then
+            echo -e " ${BLUE}IPv4 地址:${PLAIN} $ipv4_address"
+        fi
+        
+        if [ -n "$ipv6_address" ]; then
+            echo -e " ${BLUE}IPv6 地址:${PLAIN} $ipv6_address"
+        fi
+        
+        echo ""
+        read -rp "请输入选项 [1-8]: " choice
+        
+        case $choice in
+        1)
+            install_warp
+            read -rp "按回车键返回菜单..."
+            ;;
+        2)
+            uninstall_warp
+            read -rp "按回车键返回菜单..."
+            ;;
+        3)
+            manual_ip_selection
+            read -rp "按回车键返回菜单..."
+            ;;
+        4)
+            cloud_ip_selection
+            read -rp "按回车键返回菜单..."
+            ;;
+        5)
+            bash <(curl -fsSL https://raw.githubusercontent.com/fscarmen/warp/main/menu.sh) 4
+            read -rp "按回车键返回菜单..."
+            ;;
+        6)
+            warp restart
+            read -rp "按回车键返回菜单..."
+            ;;
+        7)
+            warp logs
+            read -rp "按回车键返回菜单..."
+            ;;
+        8)
+            echo "退出脚本..."
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}无效选项，请重新输入！${PLAIN}"
+            sleep 2
+            ;;
+        esac
     done
-    if [ ${#missing[@]} -ne 0 ]; then
-        echo -e "${YELLOW}Missing dependencies: ${missing[*]}${NC}"
-        echo "Please install them using: apt update && apt install -y jq curl coreutils grep sed gawk"
-        exit 1
-    fi
 }
 
-# Function to generate random IP from CIDR
-random_ip_from_cidr() {
-    local cidr="$1"
-    IFS='/' read -r ip mask <<< "$cidr"
-    IFS='.' read -r a b c d <<< "$ip"
-    local ipint=$((a * 16777216 + b * 65536 + c * 256 + d))
-    local shift=$((32 - mask))
-    local netmask=$(((0xFFFFFFFF << shift) & 0xFFFFFFFF))
-    local network=$((ipint & netmask))
-    local host_bits=$(((1 << shift) - 1))
-    local num_hosts=$((host_bits - 1))
-    if (( num_hosts <= 0 )); then
-        return 1
-    fi
-    local offset=$((1 + (RANDOM % num_hosts)))
-    local newint=$((network + offset))
-    printf "%d.%d.%d.%d" $((newint >> 24)) $(((newint >> 16) & 255)) $(((newint >> 8) & 255)) $((newint & 255))
+# 自动生成所有配置
+auto_generate_all() {
+    echo -e "${BLUE}开始生成所有配置...${PLAIN}"
+    
+    # 生成三种配置
+    manual_ip_selection
+    cloud_ip_selection
+    self_ip_selection
+    
+    # 合并所有配置
+    cat warp_nodes.txt > all_nodes.txt
+    echo ""
+    echo -e "${GREEN}所有配置已生成并保存到:${PLAIN}"
+    echo -e "${YELLOW}手动优选配置:${PLAIN} $(pwd)/cf_all_ip.txt"
+    echo -e "${YELLOW}云优选配置:${PLAIN} $(pwd)/cf_ipv4.txt 和 $(pwd)/cf_ipv6.txt"
+    echo -e "${YELLOW}自优选配置:${PLAIN} $(pwd)/self_ip.txt"
+    echo -e "${YELLOW}节点配置文件:${PLAIN} $(pwd)/warp_nodes.txt"
+    echo -e "${YELLOW}JD保存文件:${PLAIN} $(pwd)/jd.txt"
 }
 
-# Get template - pick first valid vmess://
-get_template() {
-    local template_file="/etc/sing-box/url.txt"
-    if [ -s "$template_file" ]; then
-        template=$(grep -m1 '^vmess://' "$template_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    fi
-    if [ -z "$template" ] || [[ ! "$template" =~ ^vmess:// ]]; then
-        echo -e "${YELLOW}No valid VMess template found at $template_file. Please provide one.${NC}"
-        read -p "Paste the template link (vmess://...): " template
-        template=$(echo "$template" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [ -z "$template" ] || [[ ! "$template" =~ ^vmess:// ]]; then
-            echo -e "${RED}Invalid template provided. Exiting.${NC}"
-            exit 1
-        fi
-    fi
-    # Quick validation
-    local base64_part="${template#vmess://}"
-    if ! echo "$base64_part" | base64 -d >/dev/null 2>&1; then
-        echo -e "${RED}Invalid base64 in template. Exiting.${NC}"
-        exit 1
-    fi
-    if ! echo "$base64_part" | base64 -d | jq . >/dev/null 2>&1; then
-        echo -e "${RED}Invalid JSON in template. Exiting.${NC}"
-        exit 1
-    fi
-}
-
-# Generate node from template
-generate_node() {
-    local add="$1"
-    local ps="$2"
-    local base64_part="${template#vmess://}"
-    local decoded=$(echo "$base64_part" | base64 -d)
-    local new_json=$(echo "$decoded" | jq --arg add "$add" --arg ps "$ps" '.add = $add | .ps = $ps')
-    local new_base64=$(echo "$new_json" | base64 -w 0)
-    echo "vmess://$new_base64"
-}
-
-# Main generation logic
-generate_all_nodes() {
-    local output=""
-    local jd_file="$(pwd)/jd.txt"
-
-    # 1) Cloudflare 官方 (手动优选) - Generate 10 random IPs
-    echo -e "${GREEN}Generating from Cloudflare Official IPs...${NC}"
-    local cidrs=$(curl -s https://www.cloudflare.com/ips-v4)
-    local num_generated=0
-    if [ -n "$cidrs" ]; then
-        cidrs=$(echo "$cidrs" | tr ' ' '\n')
-        for i in $(seq 1 20); do  # Max 20 attempts
-            if [ $num_generated -ge 10 ]; then
-                break
-            fi
-            local cidr=$(echo "$cidrs" | shuf -n 1)
-            local ip=$(random_ip_from_cidr "$cidr")
-            if [ -n "$ip" ]; then
-                local ps="vpsus-CF[$ip]"
-                local node=$(generate_node "$ip" "$ps")
-                if [ -n "$node" ]; then
-                    output+="$node"$'\n'
-                    ((num_generated++))
-                fi
-            fi
-        done
-        echo -e "${GREEN}Generated $num_generated official nodes.${NC}"
-    else
-        echo -e "${YELLOW}Failed to fetch official CIDRs.${NC}"
-    fi
-
-    # 2) 云优选 - Parse HTML table
-    echo -e "${GREEN}Generating from 云优选 IPs...${NC}"
-    local html=$(curl -s https://api.uouin.com/cloudflare.html)
-    local count=0
-    if [ -n "$html" ]; then
-        local opt_lines=$(echo "$html" | sed -E -n 's/.*<td>(电信|联通|移动|多线)<\/td>.*<td>(([0-9]{1,3}\.){3}[0-9]{1,3})<\/td>.*$/\1 \2/p')
-        if [ -n "$opt_lines" ]; then
-            while IFS= read -r line; do
-                local operator=$(echo "$line" | awk '{print $1}')
-                local ip=$(echo "$line" | awk '{print $2}')
-                if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                    local ps="vpsus-${operator}[$ip]"
-                    local node=$(generate_node "$ip" "$ps")
-                    if [ -n "$node" ]; then
-                        output+="$node"$'\n'
-                        ((count++))
-                    fi
-                fi
-            done <<< "$opt_lines"
-            echo -e "${GREEN}Generated $count optimized nodes.${NC}"
-        else
-            echo -e "${YELLOW}Unable to parse optimized IPs.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}Failed to fetch optimized IPs.${NC}"
-    fi
-
-    # 3) 自优选 - From custom txt
-    echo -e "${GREEN}Generating from 自优选 source...${NC}"
-    local self_content=$(curl -s http://nas.848588.xyz:18080/output/abc/dy/cf.txt)
-    local self_count=0
-    if [ -n "$self_content" ]; then
-        local self_adds=$(echo "$self_content" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -50)
-        if [ -n "$self_adds" ]; then
-            while IFS= read -r add; do
-                if [[ "$add" =~ ^[0-9a-zA-Z.-]+$ ]] || [[ "$add" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$add" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                    local ps="vpsus-自选[$add]"
-                    local node=$(generate_node "$add" "$ps")
-                    if [ -n "$node" ]; then
-                        output+="$node"$'\n'
-                        ((self_count++))
-                    fi
-                fi
-            done <<< "$self_adds"
-            echo -e "${GREEN}Generated $self_count self-optimized nodes.${NC}"
-        else
-            echo -e "${YELLOW}No valid adds in self-optimized source.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}Failed to fetch self-optimized source.${NC}"
-    fi
-
-    # Output and save
-    if [ -n "$output" ]; then
-        echo -e "${GREEN}Generated nodes:${NC}"
-        echo -e "$output"
-        echo "$output" > "$jd_file"
-        if command -v realpath >/dev/null 2>&1; then
-            echo -e "${GREEN}Results saved to $(realpath "$jd_file")${NC}"
-        else
-            echo -e "${GREEN}Results saved to $jd_file${NC}"
-        fi
-    else
-        echo -e "${RED}No nodes generated.${NC}"
-    fi
-}
-
-# Header (optional, from original)
-echo "=================================================="
-echo " 节点优选生成器 (cfy) - Modified"
-echo "=================================================="
-
-# Run
-check_dependencies
-get_template
-generate_all_nodes
+# 执行自动生成
+auto_generate_all
