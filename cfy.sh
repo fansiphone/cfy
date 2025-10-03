@@ -50,7 +50,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 check_deps() {
-    for cmd in jq curl base64 grep sed mktemp shuf; do
+    for cmd in jq curl base64 grep sed mktemp shuf awk; do
         if ! command -v "$cmd" &> /dev/null; then
             echo -e "${RED}错误: 命令 '$cmd' 未找到. 请先安装它.${NC}"
             exit 1
@@ -92,8 +92,12 @@ get_all_optimized_ips() {
             else echo -e "${RED}请输入一个有效的正整数.${NC}"; fi
         done
         declare -g num_to_generate="$num_to_generate"
+        declare -g -a ip_list
+        for ip in "${ip_list[@]}"; do
+            declare -g -a ip_list+=("$ip")
+        done
         # 为 isp_list 填充 "CF官方"
-        isp_list=()
+        declare -g -a isp_list=()
         for ((i=0; i<${#ip_list[@]}; i++)); do
             isp_list+=("CF官方")
         done
@@ -111,7 +115,11 @@ get_all_optimized_ips() {
         # 处理获取的数据，每行一个
         mapfile -t ip_list <<< "$ips"
         # 创建等长的isp_list数组，填充"自选"
-        isp_list=()
+        declare -g -a ip_list
+        for ip in "${ip_list[@]}"; do
+            declare -g -a ip_list+=("$ip")
+        done
+        declare -g -a isp_list=()
         for ((i=0; i<${#ip_list[@]}; i++)); do
             isp_list+=("自选")
         done
@@ -132,10 +140,20 @@ get_all_optimized_ips() {
         echo -e "  -> 正在获取 ${type_desc} 列表..."
         local html_content=$(curl -s "$url")
         if [ -z "$html_content" ]; then echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"; return; fi
-        local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
-        local ips=$(echo "$table_rows" | sed -n 's/.*data-label="IP">\([^<]*\)<.*/\1/p')
-        local isps=$(echo "$table_rows" | sed -n 's/.*data-label="ISP">\([^<]*\)<.*/\1/p')
-        paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
+        
+        # 解析 Markdown 表格，跳过表头
+        local table_rows=$(echo "$html_content" | awk '/^\|.*\|.*\|/ {if (NR>1) print}' | grep -v '^|\|---')
+        if [ -z "$table_rows" ]; then echo -e "${RED}  -> 未找到表格行.${NC}"; return; fi
+        
+        local ips=$(echo "$table_rows" | sed 's/.*| \([0-9a-fA-F:.]\+\) | .*/\1/' | grep -E '^[0-9a-fA-F:.]+$' | head -10)
+        local isps=$(echo "$table_rows" | sed 's/^| \([^|]\+\) | .*/\1/' | grep -v '^$')
+        
+        # 确保 ips 和 isps 行数匹配，取最小
+        local max_lines=$(echo -e "$ips\n$isps" | wc -l | awk '{print ($1 < NR ? $1 : NR)/2}')
+        head -n "$max_lines" <(echo "$ips") > /tmp/ips.tmp
+        head -n "$max_lines" <(echo "$isps") > /tmp/isps.tmp
+        paste -d' ' /tmp/ips.tmp /tmp/isps.tmp >> "$paired_data_file"
+        rm -f /tmp/ips.tmp /tmp/isps.tmp
     }
 
     if $use_optimized_ips; then
@@ -238,9 +256,12 @@ main() {
     local original_ps=$(echo "$original_json" | jq -r .ps)
     echo -e "${GREEN}已选择: $original_ps${NC}"
     
-    declare -a ip_list isp_list; local num_to_generate=0
+    local num_to_generate=0
     local mode=""
     get_all_optimized_ips || exit 1
+    
+    declare -a ip_list=("${ip_list[@]}")
+    declare -a isp_list=("${isp_list[@]}")
     
     if [ ${#ip_list[@]} -gt 0 ]; then
         if [[ "$ip_source_choice" == "1" ]]; then
