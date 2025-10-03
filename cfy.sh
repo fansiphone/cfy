@@ -1,7 +1,175 @@
 #!/bin/bash
 
+# === 第一步：优先检测--cloud参数，直接拦截非交互模式 ===
+AUTO_RUN_CLOUD=0
+for arg in "$@"; do
+    if [[ "$arg" == "-c" || "$arg" == "--cloud" ]]; then
+        AUTO_RUN_CLOUD=1
+        break
+    fi
+done
+
+# 如果是非交互模式，直接执行选项2逻辑，不进入主流程
+if [[ "$AUTO_RUN_CLOUD" -eq 1 ]]; then
+    # 定义必要变量和函数（仅保留选项2所需逻辑）
+    INSTALL_PATH="/usr/local/bin/cfy"
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    RED='\033[0;31m'
+    NC='\033[0m'
+
+    # 检查依赖
+    check_deps() {
+        for cmd in jq curl base64 grep sed mktemp shuf; do
+            if ! command -v "$cmd" &> /dev/null; then
+                echo -e "${RED}错误: 命令 '$cmd' 未找到. 请先安装它.${NC}"
+                exit 1
+            fi
+        done
+    }
+
+    # 检查IP是否存在
+    ip_exists() {
+        local ip="$1"
+        local file="$2"
+        [ -f "$file" ] || return 1
+        grep -qxF "$ip" "$file"
+    }
+
+    # 处理选项2核心逻辑（修复：将IP列表声明为全局变量）
+    process_cloud_optimize() {
+        echo -e "${YELLOW}正在获取优选 IPv4 地址...${NC}"
+        
+        local paired_data_file
+        paired_data_file=$(mktemp)
+        trap 'rm -f "$paired_data_file"' EXIT
+
+        parse_url() {
+            local url="$1"; local type_desc="$2"
+            echo -e "  -> 正在获取 ${type_desc} 列表..."
+            local html_content=$(curl -s "$url")
+            if [ -z "$html_content" ]; then 
+                echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"
+                return
+            fi
+            local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
+            local ips=$(echo "$table_rows" | sed -n 's/.*data-label="优选地址">\([^<]*\)<.*/\1/p')
+            local isps=$(echo "$table_rows" | sed -n 's/.*data-label="线路名称">\([^<]*\)<.*/\1/p')
+            paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
+        }
+
+        local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
+        parse_url "$url_v4" "IPv4"
+
+        if ! [ -s "$paired_data_file" ]; then 
+            echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"
+            exit 1
+        fi
+
+        # 关键修复：用declare -g声明全局变量，确保函数外可访问
+        declare -g -a ip_list=() isp_list=()
+        local shuffled_pairs
+        mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
+        for pair in "${shuffled_pairs[@]}"; do
+            ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
+            isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
+        done
+        
+        # 去重追加到ipv4.txt
+        local ipv4_file="ipv4.txt"
+        if [ ${#ip_list[@]} -gt 0 ]; then
+            echo -e "${YELLOW}正在将新IP追加到 $ipv4_file（自动去重）...${NC}"
+            local new_count=0
+            
+            for ip in "${ip_list[@]}"; do
+                if ! ip_exists "$ip" "$ipv4_file"; then
+                    echo "$ip" >> "$ipv4_file"
+                    ((new_count++))
+                fi
+            done
+            
+            echo -e "${GREEN}已完成！新增 ${new_count} 个IP，$ipv4_file 中共有 $(wc -l < "$ipv4_file") 个唯一IP${NC}"
+        fi
+        
+        if [ ${#ip_list[@]} -eq 0 ]; then 
+            echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}成功获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
+    }
+
+    # 生成节点名称
+    generate_node_name() {
+        local ip="$1"
+        local isp_name="$2"
+        echo "${isp_name}${ip}-vpsus"
+    }
+
+    # 非交互模式主逻辑
+    main_non_interactive() {
+        local url_file="/etc/sing-box/url.txt"
+        local selected_url=""
+
+        # 自动选择第一个有效节点
+        if [ -f "$url_file" ]; then
+            mapfile -t urls < "$url_file"
+            for url in "${urls[@]}"; do
+                decoded_json=$(echo "${url#"vmess://"}" | base64 -d 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$decoded_json" ]; then
+                    ps=$(echo "$decoded_json" | jq -r .ps 2>/dev/null)
+                    if [ $? -eq 0 ] && [ -n "$ps" ]; then 
+                        selected_url="$url"
+                        break
+                    fi
+                fi
+            done
+        fi
+
+        if [ -z "$selected_url" ]; then
+            echo -e "${RED}非交互模式：未找到有效节点，无法执行选项2${NC}"
+            exit 1
+        fi
+
+        # 解析原始节点信息
+        local base64_part="${selected_url#"vmess://"}"
+        local original_json=$(echo "$base64_part" | base64 -d)
+        
+        # 获取IP列表（此时ip_list已是全局变量）
+        process_cloud_optimize
+        
+        # 生成节点链接（现在能正确读取ip_list长度）
+        local num_to_generate=${#ip_list[@]}
+        if [ "$num_to_generate" -gt 0 ]; then
+            > jd.txt  # 清空输出文件
+            
+            local mode="cloud"
+            for ((i=0; i<num_to_generate; i++)); do
+                local current_ip="${ip_list[$i]}"
+                local isp_name="${isp_list[$i]}"
+                local new_ps=$(generate_node_name "$current_ip" "$isp_name")
+                local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+                local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
+                local new_url="vmess://${new_base64}"
+                echo "$new_url" >> jd.txt
+            done
+            
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] 自动执行选项2完成，新增 ${num_to_generate} 个节点"
+        else
+            echo -e "${RED}没有可用的 IP 地址用于生成节点.${NC}"
+            exit 1
+        fi
+    }
+
+    # 执行非交互模式
+    check_deps
+    main_non_interactive
+    exit 0  # 强制退出，不执行后续交互代码
+fi
+
+# === 以下为交互模式代码（--cloud时不会执行） ===
 INSTALL_PATH="/usr/local/bin/cfy"
 
+# 安装逻辑
 if [ "$0" != "$INSTALL_PATH" ]; then
     echo "正在安装 [cfy 节点优选生成器]..."
 
@@ -12,15 +180,12 @@ if [ "$0" != "$INSTALL_PATH" ]; then
     
     echo "正在将脚本写入到 $INSTALL_PATH..."
     
-    # 智能判断执行模式
     if [[ "$(basename "$0")" == "bash" || "$(basename "$0")" == "sh" || "$(basename "$0")" == "-bash" ]]; then
-        # 管道模式: curl ... | bash
         if ! cat /proc/self/fd/0 > "$INSTALL_PATH"; then
             echo "❌ 写入脚本失败 (管道模式)，请重试。"
             exit 1
         fi
     else
-        # 文件模式: bash cfy.sh 或 bash <(curl ...)
         if ! cp "$0" "$INSTALL_PATH"; then
             echo "❌ 复制脚本失败 (文件模式)，请重试。"
             exit 1
@@ -40,8 +205,7 @@ if [ "$0" != "$INSTALL_PATH" ]; then
     exit 0
 fi
 
-# --- 主程序从这里开始 ---
-
+# 交互模式主程序
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -56,96 +220,47 @@ check_deps() {
     done
 }
 
-# 检查IP是否已存在于文件中
 ip_exists() {
     local ip="$1"
     local file="$2"
-    # 如果文件不存在则返回不存在
     [ -f "$file" ] || return 1
-    # 精确匹配整行，避免部分匹配
     grep -qxF "$ip" "$file"
 }
 
-get_all_optimized_ips() {
-    local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
-    local self_select_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
-    local ipv4_file="ipv4.txt"  # 定义IP存储文件
+process_official() {
+    echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
+    cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
+    if [ -z "$cloudflare_ips" ]; then 
+        echo -e "${RED}无法获取 Cloudflare IP 列表.${NC}"
+        exit 1
+    fi
     
-    echo -e "${YELLOW}请选择 IP 地址来源:${NC}"
-    echo "  1) Cloudflare 官方 (手动优选)"
-    echo "  2) 云优选  "
-    echo "  3) 自优选模式"
-    
-    local ip_source_choice; local use_optimized_ips=false; local use_self_select=false
-    while true; do
-        read -p "请输入选项编号 (1-3): " ip_source_choice
-        if [[ "$ip_source_choice" == "1" ]]; then break;
-        elif [[ "$ip_source_choice" == "2" ]]; then use_optimized_ips=true; break;
-        elif [[ "$ip_source_choice" == "3" ]]; then use_self_select=true; break;
-        else echo -e "${RED}无效的输入, 请重试.${NC}"; fi
+    mapfile -t temp_ip_list <<< "$cloudflare_ips"
+    declare -g -a ip_list=()
+    for ip_with_cidr in "${temp_ip_list[@]}"; do
+        pure_ip=${ip_with_cidr%/*}
+        ip_list+=("$pure_ip")
     done
     
-    if $use_self_select; then
-        echo -e "${YELLOW}正在从自选链接获取 IP 地址...${NC}"
-        ips=$(curl -s "$self_select_url")
-        if [ -z "$ips" ]; then
-            echo -e "${RED}无法从自选链接获取 IP 地址.${NC}"
-            return 1
-        fi
-        
-        # 处理获取的数据，每行一个
-        mapfile -t ip_list <<< "$ips"
-        # 创建等长的isp_list数组，填充"自选"
-        isp_list=()
-        for ((i=0; i<${#ip_list[@]}; i++)); do
-            isp_list+=("自选")
-        done
-        
-        echo -e "${GREEN}成功获取 ${#ip_list[@]} 个自选 IP 地址.${NC}"
-        return 0
-    fi
-
-    # 选项1: Cloudflare官方IP处理（修复IP格式）
-    if [[ "$ip_source_choice" == "1" ]]; then
-        echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
-        cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
-        if [ -z "$cloudflare_ips" ]; then 
-            echo -e "${RED}无法获取 Cloudflare IP 列表.${NC}"
-            return 1
-        fi
-        
-        # 修复：去除子网掩码，只保留纯IP地址
-        mapfile -t temp_ip_list <<< "$cloudflare_ips"
-        ip_list=()
-        for ip_with_cidr in "${temp_ip_list[@]}"; do
-            # 截取斜杠前的纯IP部分（如从173.245.48.0/20提取173.245.48.0）
-            pure_ip=${ip_with_cidr%/*}
-            ip_list+=("$pure_ip")
-        done
-        
-        # 生成对应ISP列表
-        isp_list=()
-        for ((i=0; i<${#ip_list[@]}; i++)); do
-            isp_list+=("官方")
-        done
-        echo -e "${GREEN}成功获取 ${#ip_list[@]} 个 Cloudflare IPv4 地址.${NC}"
-        
-        # 询问生成数量
-        while true; do
-            read -p "请输入您想生成的 URL 数量: " num_to_generate
-            if [[ "$num_to_generate" =~ ^[0-9]+$ ]] && [ "$num_to_generate" -gt 0 ]; then
-                # 截取所需数量的IP
-                ip_list=("${ip_list[@]:0:$num_to_generate}")
-                isp_list=("${isp_list[@]:0:$num_to_generate}")
-                break
-            else 
-                echo -e "${RED}请输入一个有效的正整数.${NC}"
-            fi
-        done
-        return 0
-    fi
+    declare -g -a isp_list=()
+    for ((i=0; i<${#ip_list[@]}; i++)); do
+        isp_list+=("官方")
+    done
+    echo -e "${GREEN}成功获取 ${#ip_list[@]} 个 Cloudflare IPv4 地址.${NC}"
     
-    # 选项2: 云优选IP处理（仅保留IPv4）
+    while true; do
+        read -p "请输入您想生成的 URL 数量: " num_to_generate
+        if [[ "$num_to_generate" =~ ^[0-9]+$ ]] && [ "$num_to_generate" -gt 0 ]; then
+            ip_list=("${ip_list[@]:0:$num_to_generate}")
+            isp_list=("${isp_list[@]:0:$num_to_generate}")
+            break
+        else 
+            echo -e "${RED}请输入一个有效的正整数.${NC}"
+        fi
+    done
+}
+
+process_cloud_optimize() {
     echo -e "${YELLOW}正在获取优选 IPv4 地址...${NC}"
     
     local paired_data_file
@@ -156,35 +271,38 @@ get_all_optimized_ips() {
         local url="$1"; local type_desc="$2"
         echo -e "  -> 正在获取 ${type_desc} 列表..."
         local html_content=$(curl -s "$url")
-        if [ -z "$html_content" ]; then echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"; return; fi
+        if [ -z "$html_content" ]; then 
+            echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"
+            return
+        fi
         local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
         local ips=$(echo "$table_rows" | sed -n 's/.*data-label="优选地址">\([^<]*\)<.*/\1/p')
         local isps=$(echo "$table_rows" | sed -n 's/.*data-label="线路名称">\([^<]*\)<.*/\1/p')
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
     }
 
-    # 仅处理IPv4
+    local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
     parse_url "$url_v4" "IPv4"
 
     if ! [ -s "$paired_data_file" ]; then 
         echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"
-        return 1
+        exit 1
     fi
 
-    declare -g -a ip_list isp_list; local shuffled_pairs
+    declare -g -a ip_list=() isp_list=()
+    local shuffled_pairs
     mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
     for pair in "${shuffled_pairs[@]}"; do
         ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
     done
     
-    # 将获取到的新IP追加到ipv4.txt（去重处理）
+    local ipv4_file="ipv4.txt"
     if [ ${#ip_list[@]} -gt 0 ]; then
         echo -e "${YELLOW}正在将新IP追加到 $ipv4_file（自动去重）...${NC}"
-        local new_count=0  # 统计新增的IP数量
+        local new_count=0
         
         for ip in "${ip_list[@]}"; do
-            # 检查IP是否已存在，不存在则追加
             if ! ip_exists "$ip" "$ipv4_file"; then
                 echo "$ip" >> "$ipv4_file"
                 ((new_count++))
@@ -196,20 +314,63 @@ get_all_optimized_ips() {
     
     if [ ${#ip_list[@]} -eq 0 ]; then 
         echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"
-        return 1
+        exit 1
     fi
     echo -e "${GREEN}成功获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
-    return 0
+}
+
+process_self_select() {
+    local self_select_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
+    echo -e "${YELLOW}正在从自选链接获取 IP 地址...${NC}"
+    ips=$(curl -s "$self_select_url")
+    if [ -z "$ips" ]; then
+        echo -e "${RED}无法从自选链接获取 IP 地址.${NC}"
+        exit 1
+    fi
+    
+    declare -g -a ip_list=()
+    mapfile -t ip_list <<< "$ips"
+    
+    declare -g -a isp_list=()
+    for ((i=0; i<${#ip_list[@]}; i++)); do
+        isp_list+=("自选")
+    done
+    
+    echo -e "${GREEN}成功获取 ${#ip_list[@]} 个自选 IP 地址.${NC}"
+}
+
+get_all_optimized_ips() {
+    echo -e "${YELLOW}请选择 IP 地址来源:${NC}"
+    echo "  1) Cloudflare 官方 (手动优选)"
+    echo "  2) 云优选  "
+    echo "  3) 自优选模式"
+    
+    local ip_source_choice
+    while true; do
+        read -p "请输入选项编号 (1-3): " ip_source_choice
+        if [[ "$ip_source_choice" == "1" ]]; then
+            process_official
+            break
+        elif [[ "$ip_source_choice" == "2" ]]; then
+            process_cloud_optimize
+            break
+        elif [[ "$ip_source_choice" == "3" ]]; then
+            process_self_select
+            break
+        else
+            echo -e "${RED}无效的输入, 请重试.${NC}"
+        fi
+    done
 }
 
 generate_node_name() {
-    local ip=$1
-    local isp_name=$2
-    local mode=$3
+    local ip="$1"
+    local isp_name="$2"
+    local mode="$3"
     
-    case $mode in
+    case "$mode" in
         "official")
-            echo "$ip-CFvpsus"
+            echo "${ip}-CFvpsus"
             ;;
         "cloud")
             echo "${isp_name}${ip}-vpsus"
@@ -226,6 +387,7 @@ generate_node_name() {
 main() {
     local url_file="/etc/sing-box/url.txt"
     declare -a valid_urls valid_ps_names
+    local selected_url=""
     
     echo -e "${GREEN}=================================================="
     echo -e " 节点优选生成器 (cfy)"
@@ -251,10 +413,9 @@ main() {
         done
     fi
 
-    local selected_url
     if [ ${#valid_urls[@]} -gt 0 ]; then
         if [ ${#valid_urls[@]} -eq 1 ]; then
-            selected_url=${valid_urls[0]}
+            selected_url="${valid_urls[0]}"
             echo -e "${YELLOW}检测到只有一个有效节点, 已自动选择: ${valid_ps_names[0]}${NC}"
         else
             echo -e "${YELLOW}请选择一个节点作为:${NC}"
@@ -265,7 +426,7 @@ main() {
             while true; do
                 read -p "请输入选项编号 (1-${#valid_urls[@]}): " choice
                 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#valid_urls[@]} ]; then
-                    selected_url=${valid_urls[$((choice-1))]}
+                    selected_url="${valid_urls[$((choice-1))]}"
                     break
                 else 
                     echo -e "${RED}无效的输入, 请重试.${NC}"
@@ -276,7 +437,7 @@ main() {
         echo -e "${YELLOW}在 $url_file 中未找到有效节点.${NC}"
         while true; do
             read -p "请手动粘贴一个 vmess:// 链接作为: " selected_url
-            if [[ "$selected_url" != vmess://* ]]; then 
+            if [[ "$selected_url" != "vmess://"* ]]; then 
                 echo -e "${RED}格式错误, 必须以 vmess:// 开头.${NC}"
                 continue
             fi
@@ -294,32 +455,25 @@ main() {
         done
     fi
 
-    local base64_part=${selected_url#"vmess://"}
+    local base64_part="${selected_url#"vmess://"}"
     local original_json=$(echo "$base64_part" | base64 -d)
     local original_ps=$(echo "$original_json" | jq -r .ps)
     echo -e "${GREEN}已选择: $original_ps${NC}"
     
-    declare -a ip_list isp_list; local num_to_generate=0
-    local mode=""
+    declare -g -a ip_list=() isp_list=()
     get_all_optimized_ips || exit 1
     
-    if [ ${#ip_list[@]} -gt 0 ]; then
-        num_to_generate=${#ip_list[@]}
-    else
-        echo -e "${RED}无法获取任何 IP 地址.${NC}"
-        exit 1
-    fi
-    
-    if [ $num_to_generate -gt 0 ]; then
-        # 清空 jd.txt
+    local num_to_generate=${#ip_list[@]}
+    if [ "$num_to_generate" -gt 0 ]; then
         > jd.txt
         
         echo "---"; echo -e "${YELLOW}生成的新节点链接如下:${NC}"
-        for ((i=0; i<$num_to_generate; i++)); do
-            local current_ip=${ip_list[$i]}
-            local isp_name=${isp_list[$i]}
+        
+        local mode=""
+        for ((i=0; i<num_to_generate; i++)); do
+            local current_ip="${ip_list[$i]}"
+            local isp_name="${isp_list[$i]}"
             
-            # 确定当前模式
             if [ -z "$mode" ]; then
                 if [ "$isp_name" == "自选" ]; then
                     mode="self"
@@ -330,17 +484,12 @@ main() {
                 fi
             fi
             
-            # 生成新的节点名称
             local new_ps=$(generate_node_name "$current_ip" "$isp_name" "$mode")
-            
             local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
             local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
             local new_url="vmess://${new_base64}"
             
-            # 输出到屏幕
             echo "$new_url"
-            
-            # 保存到 jd.txt
             echo "$new_url" >> jd.txt
         done
         
@@ -348,6 +497,7 @@ main() {
         echo -e "${GREEN}所有节点已保存到 jd.txt${NC}"
     else
         echo -e "${RED}没有可用的 IP 地址用于生成节点.${NC}"
+        exit 1
     fi
 }
 
