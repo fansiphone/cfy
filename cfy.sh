@@ -77,9 +77,32 @@ get_all_optimized_ips() {
         else echo -e "${RED}无效的输入, 请重试.${NC}"; fi
     done
     
+    declare -g ip_source_choice="$ip_source_choice"
+    
+    if [[ "$ip_source_choice" == "1" ]]; then
+        echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
+        local cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
+        if [ -z "$cloudflare_ips" ]; then echo -e "${RED}无法获取 Cloudflare IP 列表.${NC}"; return 1; fi
+        mapfile -t ip_list <<< "$cloudflare_ips"
+        echo -e "${GREEN}成功获取 ${#ip_list[@]} 个 Cloudflare IPv4 地址段.${NC}"
+        local num_to_generate
+        while true; do
+            read -p "请输入您想生成的 URL 数量: " num_to_generate
+            if [[ "$num_to_generate" =~ ^[0-9]+$ ]] && [ "$num_to_generate" -gt 0 ]; then break;
+            else echo -e "${RED}请输入一个有效的正整数.${NC}"; fi
+        done
+        declare -g num_to_generate="$num_to_generate"
+        # 为 isp_list 填充 "CF官方"
+        isp_list=()
+        for ((i=0; i<${#ip_list[@]}; i++)); do
+            isp_list+=("CF官方")
+        done
+        return 0
+    fi
+    
     if $use_self_select; then
         echo -e "${YELLOW}正在从自选链接获取 IP 地址...${NC}"
-        ips=$(curl -s "$self_select_url")
+        local ips=$(curl -s "$self_select_url")
         if [ -z "$ips" ]; then
             echo -e "${RED}无法从自选链接获取 IP 地址.${NC}"
             return 1
@@ -94,6 +117,7 @@ get_all_optimized_ips() {
         done
         
         echo -e "${GREEN}成功获取 ${#ip_list[@]} 个自选 IP 地址.${NC}"
+        declare -g num_to_generate="${#ip_list[@]}"
         return 0
     fi
     
@@ -109,8 +133,8 @@ get_all_optimized_ips() {
         local html_content=$(curl -s "$url")
         if [ -z "$html_content" ]; then echo -e "${RED}  -> 获取 ${type_desc} 列表失败!${NC}"; return; fi
         local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
-        local ips=$(echo "$table_rows" | sed -n 's/.*data-label="优选地址">$$[^<]*$$<.*/\1/p')
-        local isps=$(echo "$table_rows" | sed -n 's/.*data-label="线路名称">$$[^<]*$$<.*/\1/p')
+        local ips=$(echo "$table_rows" | sed -n 's/.*data-label="IP">\([^<]*\)<.*/\1/p')
+        local isps=$(echo "$table_rows" | sed -n 's/.*data-label="ISP">\([^<]*\)<.*/\1/p')
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
     }
 
@@ -129,7 +153,9 @@ get_all_optimized_ips() {
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
     done
     if [ ${#ip_list[@]} -eq 0 ]; then echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"; return 1; fi
-    echo -e "${GREEN}成功合并获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"; return 0
+    echo -e "${GREEN}成功合并获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
+    declare -g num_to_generate="${#ip_list[@]}"
+    return 0
 }
 
 generate_node_name() {
@@ -217,7 +243,17 @@ main() {
     get_all_optimized_ips || exit 1
     
     if [ ${#ip_list[@]} -gt 0 ]; then
-        num_to_generate=${#ip_list[@]}
+        if [[ "$ip_source_choice" == "1" ]]; then
+            num_to_generate="$num_to_generate"  # 已从函数中设置
+            mode="official"
+        else
+            num_to_generate=${#ip_list[@]}
+            if [[ "$ip_source_choice" == "3" ]]; then
+                mode="self"
+            else
+                mode="cloud"
+            fi
+        fi
     else
         echo -e "${RED}无法获取任何 IP 地址.${NC}"
         exit 1
@@ -228,32 +264,42 @@ main() {
         > jd.txt
         
         echo "---"; echo -e "${YELLOW}生成的新节点链接如下:${NC}"
-        for ((i=0; i<$num_to_generate; i++)); do
-            local current_ip=${ip_list[$i]}
-            local isp_name=${isp_list[$i]}
-            
-            # 确定当前模式
-            if [ -z "$mode" ]; then
-                if [ "$isp_name" == "自选" ]; then
-                    mode="self"
-                else
-                    mode="cloud"
-                fi
-            fi
-            
-            # 生成新的节点名称
-            local new_ps=$(generate_node_name "$current_ip" "$isp_name" "$mode")
-            
-            local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
-            local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
-            local new_url="vmess://${new_base64}"
-            
-            # 输出到屏幕
-            echo "$new_url"
-            
-            # 保存到 jd.txt
-            echo "$new_url" >> jd.txt
-        done
+        if [[ "$ip_source_choice" == "1" ]]; then
+            # 官方模式: 随机从 CIDR 列表选范围，取前缀 IP
+            for ((i=0; i<$num_to_generate; i++)); do
+                local random_ip_range=${ip_list[$((RANDOM % ${#ip_list[@]}))]}
+                local current_ip=${random_ip_range%/*}
+                local isp_name="CF官方"
+                local new_ps=$(generate_node_name "$current_ip" "$isp_name" "$mode")
+                local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+                local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
+                local new_url="vmess://${new_base64}"
+                
+                # 输出到屏幕
+                echo "$new_url"
+                
+                # 保存到 jd.txt
+                echo "$new_url" >> jd.txt
+            done
+        else
+            # 其他模式: 遍历 ip_list
+            for ((i=0; i<$num_to_generate; i++)); do
+                local current_ip=${ip_list[$i]}
+                local isp_name=${isp_list[$i]}
+                
+                local new_ps=$(generate_node_name "$current_ip" "$isp_name" "$mode")
+                
+                local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+                local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
+                local new_url="vmess://${new_base64}"
+                
+                # 输出到屏幕
+                echo "$new_url"
+                
+                # 保存到 jd.txt
+                echo "$new_url" >> jd.txt
+            done
+        fi
         
         echo "---"; echo -e "${GREEN}共 ${num_to_generate} 个链接已生成完毕.${NC}"
         echo -e "${GREEN}所有节点已保存到 jd.txt${NC}"
