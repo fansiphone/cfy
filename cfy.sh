@@ -139,7 +139,7 @@ generate_node_name() {
     
     case $mode in
         "official")
-            echo "CF$ip-vpsus"
+            echo "$ip-CFvpsus"
             ;;
         "cloud")
             echo "${isp_name}${ip}-vpsus"
