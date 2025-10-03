@@ -56,9 +56,20 @@ check_deps() {
     done
 }
 
+# 检查IP是否已存在于文件中
+ip_exists() {
+    local ip="$1"
+    local file="$2"
+    # 如果文件不存在则返回不存在
+    [ -f "$file" ] || return 1
+    # 精确匹配整行，避免部分匹配
+    grep -qxF "$ip" "$file"
+}
+
 get_all_optimized_ips() {
     local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
     local self_select_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
+    local ipv4_file="ipv4.txt"  # 定义IP存储文件
     
     echo -e "${YELLOW}请选择 IP 地址来源:${NC}"
     echo "  1) Cloudflare 官方 (手动优选)"
@@ -152,7 +163,7 @@ get_all_optimized_ips() {
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
     }
 
-    # 仅处理IPv4，移除IPv6相关代码
+    # 仅处理IPv4
     parse_url "$url_v4" "IPv4"
 
     if ! [ -s "$paired_data_file" ]; then 
@@ -167,13 +178,20 @@ get_all_optimized_ips() {
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
     done
     
-    # 将获取到的IP追加到ipv4.txt
+    # 将获取到的新IP追加到ipv4.txt（去重处理）
     if [ ${#ip_list[@]} -gt 0 ]; then
-        echo -e "${YELLOW}正在将获取到的IP追加到 ipv4.txt...${NC}"
+        echo -e "${YELLOW}正在将新IP追加到 $ipv4_file（自动去重）...${NC}"
+        local new_count=0  # 统计新增的IP数量
+        
         for ip in "${ip_list[@]}"; do
-            echo "$ip" >> ipv4.txt
+            # 检查IP是否已存在，不存在则追加
+            if ! ip_exists "$ip" "$ipv4_file"; then
+                echo "$ip" >> "$ipv4_file"
+                ((new_count++))
+            fi
         done
-        echo -e "${GREEN}成功将 ${#ip_list[@]} 个IP追加到 ipv4.txt${NC}"
+        
+        echo -e "${GREEN}已完成！新增 ${new_count} 个IP，$ipv4_file 中共有 $(wc -l < "$ipv4_file") 个唯一IP${NC}"
     fi
     
     if [ ${#ip_list[@]} -eq 0 ]; then 
