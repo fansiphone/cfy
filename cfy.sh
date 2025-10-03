@@ -139,16 +139,16 @@ generate_node_name() {
     
     case $mode in
         "official")
-            echo "vpsus-CF$ip"
+            echo "CF$ip-vpsus"
             ;;
         "cloud")
-            echo "vpsus-${isp_name}${ip}"
+            echo "${isp_name}${ip}-vpsus"
             ;;
         "self")
-            echo "vpsus-自选${ip}"
+            echo "自选${ip}-vpsus"
             ;;
         *)
-            echo "vpsus-${ip}"
+            echo "${ip}-vpsus"
             ;;
     esac
 }
