@@ -145,7 +145,7 @@ generate_node_name() {
             echo "${isp_name}${ip}-vpsus"
             ;;
         "self")
-            echo "自选${ip}-vpsus"
+            echo "${ip}-自选vpsus"
             ;;
         *)
             echo "${ip}-vpsus"
