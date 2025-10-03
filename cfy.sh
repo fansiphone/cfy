@@ -17,29 +17,29 @@ if [ "$0" != "$INSTALL_PATH" ]; then
         # 管道模式: curl ... | bash
         # 脚本内容在标准输入 (fd/0)
         if ! cat /proc/self/fd/0 > "$INSTALL_PATH"; then
-            echo "❌ 写入脚本失败 (管道模式)，请重试。"
-            exit 1
-        fi
-    else
-        # 文件模式: bash cfy.sh 或 bash <(curl ...)"
-        # 脚本内容在 $0 所指向的文件路径
-        if ! cp "$0" "$INSTALL_PATH"; then
-            echo "❌ 复制脚本失败 (文件模式)，请重试。"
-            exit 1
-        fi
-    fi
-
-    if [ $? -eq 0 ]; then
-        chmod +x "$INSTALL_PATH"
-        echo "✅ 安装成功! 您现在可以随时随地运行 'cfy' 命令。"
-        echo "---"
-        echo "首次运行..."
-        exec "$INSTALL_PATH"
-    else
-        echo "❌ 安装后赋权失败, 请检查权限。"
+        echo "❌ 写入脚本失败 (管道模式)，请重试。"
         exit 1
     fi
-    exit 0
+else
+    # 文件模式: bash cfy.sh 或 bash <(curl ...)
+    # 脚本内容在 $0 所指向的文件路径
+    if ! cp "$0" "$INSTALL_PATH"; then
+        echo "❌ 复制脚本失败 (文件模式)，请重试。"
+        exit 1
+    fi
+fi
+
+if [ $? -eq 0 ]; then
+    chmod +x "$INSTALL_PATH"
+    echo "✅ 安装成功! 您现在可以随时随地运行 'cfy' 命令。"
+    echo "---"
+    echo "首次运行..."
+    exec "$INSTALL_PATH"
+else
+    echo "❌ 安装后赋权失败, 请检查权限。"
+    exit 1
+fi
+exit 0
 fi
 
 # --- 主程序从这里开始 ---
@@ -53,9 +53,9 @@ check_deps() {
     for cmd in jq curl base64 grep sed mktemp shuf; do
         if ! command -v "$cmd" &> /dev/null; then
             echo -e "${RED}错误: 命令 '$cmd' 未找到. 请先安装它.${NC}"
-            exit 1
-        fi
-    done
+        exit 1
+    fi
+done
 }
 
 get_all_optimized_ips() {
@@ -144,11 +144,11 @@ get_all_optimized_ips() {
     local shuffled_pairs
     mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
     for pair in "${shuffled_pairs[@]}"; do
-        ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
-        isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
-    done
+            ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
+            isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
+        done
     if [ ${#ip_list[@]} -eq 0 ]; then
-        echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"
+            echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"
         return 1
     fi
     echo -e "${GREEN}成功合并获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
@@ -227,20 +227,20 @@ main() {
         fi
     else
         echo -e "${YELLOW}在 $url_file 中未找到有效节点.${NC}"
-        while true; do
-            read -p "请手动粘贴一个 vmess:// 链接作为: " selected_url
-            if [[ "$selected_url" != vmess://* ]]; then
-                echo                echo -e "${RED}格式错误, 必须以 vmess:// 开头.${NC}"
+            while true; do
+                read -p "请手动粘贴一个 vmess:// 链接作为: " selected_url
+                if [[ "$selected_url" != vmess://* ]]; then
+                    echo -e "${RED}格式错误, 必须以 vmess:// 开头.${NC}"
                 continue
             fi
             decoded_json=$(echo "${selected_url#"vmess://"}" | base64 -d 2>/dev/null)
             if [ $? -ne 0 ] || [ -z "$decoded_json" ]; then
-                echo -e "${RED}无法解码链接, 请检查链接是否完整有效.${NC}"
+                    echo -e "${RED}无法解码链接, 请检查链接是否完整有效.${NC}"
                 continue
             fi
             ps_check=$(echo "$decoded_json" | jq -e .ps >/dev/null 2>&1)
             if [ $? -ne 0 ]; then
-                echo -e "${RED}解码成功, 但JSON内容不完整或格式错误. 请重试.${NC}"
+                    echo -e "${RED}解码成功, 但JSON内容不完整或格式错误. 请重试.${NC}"
                 continue
             fi
             break
@@ -252,14 +252,14 @@ main() {
     local original_ps=$(echo "$original_json" | jq -r .ps)
     echo -e "${GREEN}已选择: $original_ps${NC}"
     
-    declare -a ip_list isp_list
-    local num_to_generate=0
-    local mode=""
-    
     echo -e "${YELLOW}请选择要使用的 IP 地址来源:${NC}"
     echo "  1) Cloudflare 官方 (手动优选)"
     echo "  2) 云优选"
     echo "  3) 自优选模式"
+    
+    local ip_source_choice
+    local mode=""
+    local num_to_generate=0
     
     while true; do
         read -p "请输入选项编号 (1-3): " ip_source_choice
@@ -272,7 +272,10 @@ main() {
             exit 1
         fi
         mapfile -t ip_list <<< "$cloudflare_ips"
-        echo -e "${GREEN}成功获取 ${#ip_list[@]} 个 Cloudflare IPv4 地址段.${NC}"
+        isp_list=()
+        for ((i=0; i<${#ip_list[@]}; i++)); do
+            isp_list+=("CF官方")
+        done
         
         while true; do
             read -p "请输入您想生成的 URL 数量: " num_to_generate
@@ -302,6 +305,8 @@ main() {
         # 清空 jd.txt
         > jd.txt
         
+       
+        
         echo "---"
         echo -e "${YELLOW}生成的新节点链接如下:${NC}"
         
@@ -313,7 +318,7 @@ main() {
                 # 对于官方模式，随机选择IP段
                 local random_index=$((RANDOM % ${#ip_list[@]}))
                 current_ip=${ip_list[$random_index]}
-                isp_name="CF官方"
+                isp_name=${isp_list[$random_index]}
             else
                 current_ip=${ip_list[$i]}
                 isp_name=${isp_list[$i]}
