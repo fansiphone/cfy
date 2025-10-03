@@ -58,7 +58,6 @@ check_deps() {
 
 get_all_optimized_ips() {
     local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
-    local url_v6="https://www.wetest.vip/page/cloudfront/address_v6.html"
     local self_select_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
     
     echo -e "${YELLOW}请选择 IP 地址来源:${NC}"
@@ -135,8 +134,8 @@ get_all_optimized_ips() {
         return 0
     fi
     
-    # 选项2: 云优选IP处理
-    echo -e "${YELLOW}正在合并获取所有优选 IP (IPv4 & IPv6)...${NC}"
+    # 选项2: 云优选IP处理（仅保留IPv4）
+    echo -e "${YELLOW}正在获取优选 IPv4 地址...${NC}"
     
     local paired_data_file
     paired_data_file=$(mktemp)
@@ -153,10 +152,11 @@ get_all_optimized_ips() {
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
     }
 
-    parse_url "$url_v4" "IPv4"; parse_url "$url_v6" "IPv6"
+    # 仅处理IPv4，移除IPv6相关代码
+    parse_url "$url_v4" "IPv4"
 
     if ! [ -s "$paired_data_file" ]; then 
-        echo -e "${RED}无法从任何来源解析出优选 IP 地址.${NC}"
+        echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"
         return 1
     fi
 
@@ -166,11 +166,21 @@ get_all_optimized_ips() {
         ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
     done
+    
+    # 将获取到的IP追加到ipv4.txt
+    if [ ${#ip_list[@]} -gt 0 ]; then
+        echo -e "${YELLOW}正在将获取到的IP追加到 ipv4.txt...${NC}"
+        for ip in "${ip_list[@]}"; do
+            echo "$ip" >> ipv4.txt
+        done
+        echo -e "${GREEN}成功将 ${#ip_list[@]} 个IP追加到 ipv4.txt${NC}"
+    fi
+    
     if [ ${#ip_list[@]} -eq 0 ]; then 
         echo -e "${RED}解析成功, 但未找到任何有效的 IP 地址.${NC}"
         return 1
     fi
-    echo -e "${GREEN}成功合并获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
+    echo -e "${GREEN}成功获取 ${#ip_list[@]} 个优选 IP 地址, 列表已随机打乱.${NC}"
     return 0
 }
 
