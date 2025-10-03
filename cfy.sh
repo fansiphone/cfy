@@ -10,7 +10,7 @@ if [ "$0" != "$INSTALL_PATH" ]; then
         exit 1
     fi
     
-    echo "正在将脚本写入到 $INSTALL_PATH..."
+    echo "正在将极脚本写入到 $INSTALL_PATH..."
     
     # 智能判断执行模式
     if [[ "$(basename "$0")" == "bash" || "$(basename "$0")" == "sh" || "$(basename "$0")" == "-bash" ]]; then
@@ -33,6 +33,8 @@ if [ "$0" != "$INSTALL_PATH" ]; then
         chmod +x "$INSTALL_PATH"
         echo "✅ 安装成功! 您现在可以随时随地运行 'cfy' 命令。"
         echo "---"
+        echo "首次运行..."
+       "
         echo "首次运行..."
         exec "$INSTALL_PATH"
     else
@@ -71,49 +73,50 @@ get_all_optimized_ips() {
     local ip_source_choice; local use_optimized_ips=false; local use_self_select=false
     while true; do
         read -p "请输入选项编号 (1-3): " ip_source_choice
-        case "$ip_source_choice" in
-            1)
-                # Cloudflare 官方模式
-                echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
-                cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
-                if [ -z "$cloudflare_ips" ]; then 
-                    echo -e "${RED}无法获取 Cloudflare IP 列表.${NC}"; 
-                    return 1
+        if [[ "$ip_source_choice" == "1" ]]; then 
+            # Cloudflare 官方模式
+            echo -e "${YELLOW}正在从 Cloudflare 官网获取 IPv4 地址列表...${NC}"
+            cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
+            if [ -z "$cloudflare_ips" ]; then 
+                echo -e "${RED}无法获取 Cloudflare IP 列表.${NC}"; 
+                return 1
+            fi
+            mapfile -t cidr_list <<< "$cloudflare_ips"
+            echo -e "${GREEN}成功获取 ${#cidr_list[@]} 个 Cloudflare IPv4 地址段.${NC}"
+            
+            while true; do
+                read -p "请输入您想生成的 URL 数量: " num_to_generate
+                if [[ "$num_to_generate" =~ ^[0-9]+$ ]] && [ "$num_to_generate" -gt 0 ]; then 
+                    break
+                else 
+                    echo -e "${RED}请输入一个有效的正整数.${NC}"
                 fi
-                mapfile -t cidr_list <<< "$cloudflare_ips"
-                echo -e "${GREEN}成功获取 ${#cidr_list[@]} 个 Cloudflare IPv4 地址段.${NC}"
-                
-                while true; do
-                    read -p "请输入您想生成的 URL 数量: " num_to_generate
-                    if [[ "$num_to_generate" =~ ^[0-9]+$ ]] && [ "$num_to_generate" -gt 0 ]; then 
-                        break
-                    else 
-                        echo -e "${RED}请输入一个有效的正整数.${NC}"
-                    fi
-                done
+            done
 
-                ip_list=()
-                isp_list=()
-                for ((i=0; i<num_to_generate; i++)); do
-                    random_cidr=${cidr_list[$((RANDOM % ${#cidr_list[@]}))]}
-                    ip_from_range=${random_cidr%/*}  # 去掉CIDR后缀
-                    ip_list+=("$ip_from_range")
-                    isp_list+=("Cloudflare官方")
-                done
-                ip_source_mode="official"
-                return 0
-                ;;
-            2)
-                use_optimized_ips=true
-                break
-                ;;
-            3)
-                use_self_select=true
-                break
-                ;;
-            *)
-                echo -e "${RED}无效的输入, 请重试.${NC}"
-                ;;
+            ip_list=()
+            isp_list=()
+            for ((i=0; i<num_to_generate; i++)); do
+                random_cidr=${cidr_list[$((RANDOM % ${#cidr_list[@]}))]}
+                ip_from_range=${random_cidr%/*}  # 去掉CIDR后缀
+                ip_list+=("$ip_from_range")
+                isp_list+=("Cloudflare官方")
+            done
+            ip_source_mode="official"
+            return 0
+            ;;
+        2)
+            use_optimized_ips=true
+            ip_source_mode="cloud"
+            break
+            ;;
+        3)
+            use_self_select=true
+            ip_source_mode="self"
+            break
+            ;;
+        *)
+            echo -e "${RED}无效的输入, 请重试.${NC}"
+            ;;
         esac
     done
     
@@ -150,6 +153,7 @@ get_all_optimized_ips() {
             return
         fi
         local table_rows=$(echo "$html_content" | tr -d '\n\r' | sed 's/<tr>/\n&/g' | grep '^<tr>')
+        # 修复正则表达式：使用分组捕获
         local ips=$(echo "$table_rows" | sed -n 's/.*data-label="优选地址">$$[^<]*$$<.*/\1/p')
         local isps=$(echo "$table_rows" | sed -n 's/.*data-label="线路名称">$$[^<]*$$<.*/\1/p')
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
@@ -158,7 +162,7 @@ get_all_optimized_ips() {
     if $use_optimized_ips; then
         parse_url "$url_v4" "IPv4"; parse_url "$url_v6" "IPv6"
     else
-        parse_url "$url_v4" "IPv4"
+        parse_url "$极url_v4" "IPv4"
     fi
 
     if ! [ -s "$paired_data_file" ]; then 
@@ -189,6 +193,8 @@ generate_node_name() {
         "official")
             echo "$ip-CFvpsus"
             ;;
+        "cloud")
+            echo "${ ;;
         "cloud")
             echo "${isp_name}${ip}-vpsus"
             ;;
@@ -230,6 +236,7 @@ main() {
     fi
 
     local selected_url
+    # 修复条件判断：将 > 改为 -gt
     if [ ${#valid_urls[@]} -gt 0 ]; then
         if [ ${#valid_urls[@]} -eq 1 ]; then
             selected_url=${valid_urls[0]}
@@ -291,6 +298,7 @@ main() {
     fi
     
     if [ $num_to_generate -gt 0 ]; then
+        # 清空 jd.txt
         > jd.txt
         
         echo "---"; echo -e "${YELLOW}生成的新节点链接如下:${NC}"
@@ -298,13 +306,18 @@ main() {
             local current_ip=${ip_list[$i]}
             local isp_name=${isp_list[$i]}
             
+            # 生成新的节点名称
             local new_ps=$(generate_node_name "$current_ip" "$isp_name" "$ip_source_mode")
             
             local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+            local new $new_ps')
             local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
             local new_url="vmess://${new_base64}"
             
+            # 输出到屏幕
             echo "$new_url"
+            
+            # 保存到 jd.txt
             echo "$new_url" >> jd.txt
         done
         
