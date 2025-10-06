@@ -58,8 +58,25 @@ if [[ "$AUTO_RUN_CLOUD" -eq 1 ]]; then
             paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
         }
 
+        # 从云优选页面获取IP
         local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
-        parse_url "$url_v4" "IPv4"
+        parse_url "$url_v4" "云优选页面IPv4"
+
+        # 从指定URL获取IP（新增功能）
+        echo -e "  -> 正在从自选链接获取IP列表..."
+        local self_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
+        local self_ips=$(curl -s "$self_url")
+        if [ -n "$self_ips" ]; then
+            # 为这些IP添加"自选"线路标识
+            echo "$self_ips" | while read -r ip; do
+                if [ -n "$ip" ]; then
+                    echo "$ip 自选" >> "$paired_data_file"
+                fi
+            done
+            echo -e "  -> 成功获取自选链接IP列表"
+        else
+            echo -e "${YELLOW}  -> 获取自选链接IP列表失败，将仅使用云优选页面数据${NC}"
+        fi
 
         if ! [ -s "$paired_data_file" ]; then 
             echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"
@@ -69,7 +86,8 @@ if [[ "$AUTO_RUN_CLOUD" -eq 1 ]]; then
         # 关键修复：用declare -g声明全局变量，确保函数外可访问
         declare -g -a ip_list=() isp_list=()
         local shuffled_pairs
-        mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
+        # 去重并打乱顺序
+        mapfile -t shuffled_pairs < <(sort -u "$paired_data_file" | shuf)
         for pair in "${shuffled_pairs[@]}"; do
             ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
             isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
@@ -281,8 +299,25 @@ process_cloud_optimize() {
         paste -d' ' <(echo "$ips") <(echo "$isps") >> "$paired_data_file"
     }
 
+    # 从云优选页面获取IP
     local url_v4="https://www.wetest.vip/page/cloudflare/address_v4.html"
-    parse_url "$url_v4" "IPv4"
+    parse_url "$url_v4" "云优选页面IPv4"
+
+    # 从指定URL获取IP（新增功能）
+    echo -e "  -> 正在从自选链接获取IP列表..."
+    local self_url="http://nas.848588.xyz:18080/output/abc/dy/cf.txt"
+    local self_ips=$(curl -s "$self_url")
+    if [ -n "$self_ips" ]; then
+        # 为这些IP添加"自选"线路标识
+        echo "$self_ips" | while read -r ip; do
+            if [ -n "$ip" ]; then
+                echo "$ip 自选" >> "$paired_data_file"
+            fi
+        done
+        echo -e "  -> 成功获取自选链接IP列表"
+    else
+        echo -e "${YELLOW}  -> 获取自选链接IP列表失败，将仅使用云优选页面数据${NC}"
+    fi
 
     if ! [ -s "$paired_data_file" ]; then 
         echo -e "${RED}无法从来源解析出优选 IP 地址.${NC}"
@@ -291,7 +326,8 @@ process_cloud_optimize() {
 
     declare -g -a ip_list=() isp_list=()
     local shuffled_pairs
-    mapfile -t shuffled_pairs < <(shuf "$paired_data_file")
+    # 去重并打乱顺序
+    mapfile -t shuffled_pairs < <(sort -u "$paired_data_file" | shuf)
     for pair in "${shuffled_pairs[@]}"; do
         ip_list+=("$(echo "$pair" | cut -d' ' -f1)")
         isp_list+=("$(echo "$pair" | cut -d' ' -f2-)")
